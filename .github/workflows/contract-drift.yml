@@ -6,6 +6,7 @@ on:
       - ".github/workflows/contract-drift.yml"
       - "scripts/check_docmost_contracts.py"
       - "src/docmost_cli/api/**"
+      - "tests/conftest.py"
       - "tests/contracts/**"
       - "tests/integration/**"
   push:
@@ -15,6 +16,7 @@ on:
       - ".github/workflows/contract-drift.yml"
       - "scripts/check_docmost_contracts.py"
       - "src/docmost_cli/api/**"
+      - "tests/conftest.py"
       - "tests/contracts/**"
       - "tests/integration/**"
   workflow_dispatch:

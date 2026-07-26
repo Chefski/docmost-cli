@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import time
 import uuid
 import zipfile
 from pathlib import Path
@@ -271,7 +272,23 @@ def test_safe_async_zip_import(
         file_name=f"contract-{suffix}.zip",
         file_bytes=archive.getvalue(),
     )
-    assert _resource_id(response)
+    task_id = _resource_id(response)
+    deadline = time.monotonic() + 60
+    while time.monotonic() < deadline:
+        task_response = integration_client.post(
+            "/file-tasks/info",
+            json={"fileTaskId": task_id},
+            retry_safe=True,
+        )
+        task = task_response.get("data", task_response)
+        assert isinstance(task, dict), f"unexpected file-task response: {task_response}"
+        status = str(task.get("status", "")).lower()
+        if status == "success":
+            return
+        if status == "failed":
+            pytest.fail(f"async ZIP import failed: {task}")
+        time.sleep(1)
+    pytest.fail(f"async ZIP import did not complete within 60 seconds: {task_id}")
 
 
 def test_safe_space_create_and_update(

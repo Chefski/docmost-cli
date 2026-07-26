@@ -4,6 +4,7 @@ from scripts.check_docmost_contracts import (
     HandlerBinding,
     Route,
     class_fields,
+    client_reference_routes,
     controller_bindings,
     handler_multipart_fields,
 )
@@ -41,6 +42,17 @@ export class ExampleDto {
         {"enabled", "requiredValue"},
         {"requiredValue"},
     )
+
+
+def test_client_reference_route_includes_http_method() -> None:
+    source = """
+const req = await api.post<{ items: Result[] }>("/search-attachments", params);
+await api.get('/search-attachments');
+"""
+    assert client_reference_routes(source) == {
+        Route("GET", "/search-attachments"),
+        Route("POST", "/search-attachments"),
+    }
 
 
 def test_multipart_requiredness_comes_from_handler_validation() -> None:

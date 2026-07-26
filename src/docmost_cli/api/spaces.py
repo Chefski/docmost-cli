@@ -1,5 +1,6 @@
 """Space API methods."""
 
+import re
 from typing import Any
 
 from docmost_cli.api.client import DocmostClient
@@ -13,6 +14,15 @@ __all__ = [
     "resolve_space_id",
     "update_space",
 ]
+
+
+def _slug_from_name(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_")
+    if not slug:
+        return "space"
+    if len(slug) == 1:
+        slug = f"{slug}-space"
+    return slug[:100].rstrip("-_")
 
 
 def list_spaces(
@@ -116,7 +126,10 @@ def create_space(
     Returns:
         Raw API response dict.
     """
-    body = build_body({"name": name}, slug=slug, description=description)
+    body = build_body(
+        {"name": name, "slug": slug or _slug_from_name(name)},
+        description=description,
+    )
     return client.post("/spaces/create", json=body)
 
 

@@ -1,5 +1,7 @@
 """Tests for Space API methods."""
 
+import json
+
 import pytest
 
 from docmost_cli.api.client import DocmostClient
@@ -92,6 +94,20 @@ class TestCreateSpace:
         with DocmostClient(api_key_settings) as client:
             result = create_space(client, name="Test", slug="test")
         assert result["id"] == "new-space"
+
+    def test_generates_required_slug_when_omitted(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "new-space", "name": "Release Notes", "slug": "release-notes"},
+        )
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="Release Notes")
+
+        request = httpx_mock.get_requests()[0]
+        assert json.loads(request.content) == {
+            "name": "Release Notes",
+            "slug": "release-notes",
+        }
 
 
 class TestUpdateSpace:

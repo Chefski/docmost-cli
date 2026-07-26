@@ -17,6 +17,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+def pytest_collection_modifyitems(
+    config: pytest.Config,
+    items: list[pytest.Item],
+) -> None:
+    """Skip every integration-marked test unless the suite is explicitly enabled."""
+    if config.getoption("--run-docmost-integration"):
+        return
+    skip = pytest.mark.skip(
+        reason="pass --run-docmost-integration to run real Docmost integration tests"
+    )
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip)
+
+
 @pytest.fixture(autouse=True)
 def isolate_session_cache(
     monkeypatch: pytest.MonkeyPatch,

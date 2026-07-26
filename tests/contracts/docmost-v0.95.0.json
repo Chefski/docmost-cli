@@ -70,8 +70,7 @@
       "required_fields": ["query"],
       "upstream": {
         "kind": "client-reference",
-        "file": "apps/client/src/features/search/services/search-service.ts",
-        "route_literal": "\"/search-attachments\""
+        "file": "apps/client/src/features/search/services/search-service.ts"
       },
       "schema_sources": [
         {
@@ -190,6 +189,28 @@
           "name": "UpdateCommentDto",
           "fields": ["commentId", "content"],
           "required": ["commentId", "content"]
+        }
+      ]
+    },
+    "file-tasks.info": {
+      "method": "POST",
+      "path": "/file-tasks/info",
+      "edition": "community",
+      "allowed_fields": ["fileTaskId"],
+      "required_fields": ["fileTaskId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/integrations/import/file-task.controller.ts",
+        "handler": "getFileTask",
+        "body_types": ["FileTaskIdDto"]
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/integrations/import/dto/file-task-dto.ts",
+          "name": "FileTaskIdDto",
+          "fields": ["fileTaskId"],
+          "required": ["fileTaskId"]
         }
       ]
     },
@@ -700,7 +721,13 @@
       "path": "/attachments/search",
       "source": "src/docmost_cli/api/attachments.py",
       "replacement": "/search-attachments",
-      "owner": "high-priority fix 2"
+      "owner": "high-priority fix 2",
+      "upstream_absence": [
+        {
+          "kind": "controller",
+          "file": "apps/server/src/core/attachment/attachment.controller.ts"
+        }
+      ]
     },
     {
       "kind": "endpoint",
@@ -708,7 +735,13 @@
       "path": "/pages/content",
       "source": "src/docmost_cli/api/pages.py",
       "replacement": "/pages/info",
-      "owner": "high-priority fix 1"
+      "owner": "high-priority fix 1",
+      "upstream_absence": [
+        {
+          "kind": "controller",
+          "file": "apps/server/src/core/page/page.controller.ts"
+        }
+      ]
     },
     {
       "kind": "endpoint",
@@ -716,7 +749,22 @@
       "path": "/pages/copy",
       "source": "src/docmost_cli/api/pages.py",
       "replacement": "/pages/duplicate",
-      "owner": "high-priority fix 1"
+      "owner": "high-priority fix 1",
+      "upstream_absence": [
+        {
+          "kind": "controller",
+          "file": "apps/server/src/core/page/page.controller.ts"
+        }
+      ]
+    },
+    {
+      "kind": "request-fields",
+      "method": "POST",
+      "path": "/pages/import",
+      "fields": ["parentPageId"],
+      "source": "src/docmost_cli/api/pages.py",
+      "replacement": "import then move to the requested parent",
+      "owner": "high-priority fix 3"
     },
     {
       "kind": "request-fields",

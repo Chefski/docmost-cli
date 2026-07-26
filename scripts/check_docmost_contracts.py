@@ -103,6 +103,18 @@ def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
     return bindings
 
 
+def client_reference_routes(source: str) -> set[Route]:
+    """Extract literal API method/path pairs from the Docmost web client."""
+    return {
+        Route(method.upper(), path)
+        for method, _quote, path in re.findall(
+            r"\bapi\.(get|post)\s*(?:<[^;\n]+?>)?\s*\(\s*(['\"])(/[^'\"]+)\2",
+            source,
+            re.IGNORECASE,
+        )
+    }
+
+
 def _balanced_block(source: str, start: int) -> str:
     return _balanced_delimited(source, start, "{", "}")
 
@@ -222,10 +234,11 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                             f"{sorted(binding.body_types)}"
                         )
             elif upstream["kind"] == "client-reference":
-                route_literal = upstream["route_literal"]
-                if route_literal not in source:
+                route = Route(operation["method"], operation["path"])
+                if route not in client_reference_routes(source):
                     errors.append(
-                        f"{operation_name}: {route_literal!r} is absent from {upstream['file']}"
+                        f"{operation_name}: {route.method} {route.path} is absent from "
+                        f"{upstream['file']}"
                     )
             else:
                 errors.append(f"{operation_name}: unsupported upstream kind {upstream['kind']!r}")
@@ -289,6 +302,34 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                 f"{operation_name}: contract required_fields do not match its schema "
                 f"sources; expected {sorted(schema_required)}, got {sorted(required_fields)}"
             )
+
+    for entry in contract["known_drift"]:
+        if entry["kind"] != "endpoint":
+            continue
+        route = Route(entry["method"], entry["path"])
+        absence_sources = entry.get("upstream_absence", [])
+        if not absence_sources:
+            errors.append(
+                f"known drift {route.method} {route.path}: missing upstream_absence source"
+            )
+            continue
+        for upstream in absence_sources:
+            try:
+                source = _read(docmost_repo / upstream["file"])
+                if upstream["kind"] == "controller":
+                    route_exists = route in controller_bindings(source)
+                elif upstream["kind"] == "client-reference":
+                    route_exists = route in client_reference_routes(source)
+                else:
+                    raise AssertionError(f"unsupported upstream absence kind {upstream['kind']!r}")
+            except AssertionError as exc:
+                errors.append(f"known drift {route.method} {route.path}: {exc}")
+                continue
+            if route_exists:
+                errors.append(
+                    f"known drift {route.method} {route.path}: endpoint now exists in "
+                    f"{upstream['file']}; remove the allowlist entry"
+                )
 
     return errors
 

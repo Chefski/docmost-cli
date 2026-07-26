@@ -128,7 +128,7 @@ class RecordingClient:
         return f"https://docs.example.test/api/files/{attachment_id}/{file_name}"
 
 
-def _source_requests() -> set[tuple[str, str, str]]:
+def _literal_client_requests(source: str, source_name: str) -> set[tuple[str, str, str]]:
     method_names = {
         "post": "POST",
         "post_raw": "POST",
@@ -137,26 +137,38 @@ def _source_requests() -> set[tuple[str, str, str]]:
         "get_raw": "GET",
     }
     requests: set[tuple[str, str, str]] = set()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        method = method_names.get(node.func.attr)
+        if not method:
+            continue
+        path_node = (
+            node.args[0]
+            if node.args
+            else next(
+                (keyword.value for keyword in node.keywords if keyword.arg == "path"),
+                None,
+            )
+        )
+        if not isinstance(path_node, ast.Constant) or not isinstance(path_node.value, str):
+            continue
+        if path_node.value.startswith("/"):
+            requests.add((source_name, method, path_node.value))
+    return requests
+
+
+def _source_requests() -> set[tuple[str, str, str]]:
+    requests: set[tuple[str, str, str]] = set()
     api_root = ROOT / "src" / "docmost_cli" / "api"
     for source_path in sorted(api_root.glob("*.py")):
-        tree = ast.parse(source_path.read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
-                continue
-            method = method_names.get(node.func.attr)
-            if not method or not node.args:
-                continue
-            path_node = node.args[0]
-            if not isinstance(path_node, ast.Constant) or not isinstance(path_node.value, str):
-                continue
-            if path_node.value.startswith("/"):
-                requests.add(
-                    (
-                        str(source_path.relative_to(ROOT)),
-                        method,
-                        path_node.value,
-                    )
-                )
+        requests.update(
+            _literal_client_requests(
+                source_path.read_text(),
+                str(source_path.relative_to(ROOT)),
+            )
+        )
     return requests
 
 
@@ -218,11 +230,19 @@ def test_every_literal_cli_endpoint_is_registered_or_explicit_drift() -> None:
     assert stale_allowlist == set()
 
 
+def test_literal_endpoint_inventory_handles_keyword_paths() -> None:
+    assert _literal_client_requests(
+        'client.post(path="/new-endpoint", json={"value": 1})',
+        "example.py",
+    ) == {("example.py", "POST", "/new-endpoint")}
+
+
 def test_known_drift_is_small_owned_and_actionable() -> None:
     expected = {
         ("endpoint", "POST", "/attachments/search", ()),
         ("endpoint", "POST", "/pages/content", ()),
         ("endpoint", "POST", "/pages/copy", ()),
+        ("request-fields", "POST", "/pages/import", ("parentPageId",)),
         ("request-fields", "POST", "/pages/move", ("spaceId",)),
         ("request-fields", "POST", "/search", ("cursor", "type")),
     }
@@ -240,6 +260,8 @@ def test_known_drift_is_small_owned_and_actionable() -> None:
         assert entry["owner"].startswith("high-priority fix ")
         assert entry["replacement"]
         assert (ROOT / entry["source"]).is_file()
+        if entry["kind"] == "endpoint":
+            assert entry["upstream_absence"]
 
 
 def test_known_request_field_drift_matches_current_helpers() -> None:
@@ -261,12 +283,22 @@ def test_known_request_field_drift_matches_current_helpers() -> None:
             position="aaaaa",
         )
     )
+    import_request = _single_request(
+        lambda client: import_page(
+            client,
+            space_id="00000000-0000-4000-8000-000000000002",
+            file_name="contract.md",
+            file_bytes=b"# Contract",
+            parent_page_id="00000000-0000-4000-8000-000000000001",
+        )
+    )
 
     observed: dict[tuple[str, str], set[str]] = {}
-    for request in (search_request, move_request):
+    for request in (search_request, move_request, import_request):
         matched = _operation_for(request)
         assert matched is not None
         _, operation = matched
+        assert set(operation["required_fields"]) <= set(request.fields)
         unexpected = set(request.fields) - set(operation["allowed_fields"])
         if unexpected:
             observed[(request.method, request.path)] = unexpected
@@ -348,6 +380,14 @@ def test_session_login_request_matches_pinned_contract(
                 client,
                 comment_id="00000000-0000-4000-8000-000000000003",
                 content="Updated",
+            ),
+        ),
+        (
+            "file-tasks.info",
+            lambda client: client.post(
+                path="/file-tasks/info",
+                json={"fileTaskId": "00000000-0000-4000-8000-000000000004"},
+                retry_safe=True,
             ),
         ),
         (
@@ -461,7 +501,6 @@ def test_session_login_request_matches_pinned_contract(
             lambda client: create_space(
                 client,
                 name="Contract Tests",
-                slug="contract-tests",
                 description="Disposable",
             ),
         ),
