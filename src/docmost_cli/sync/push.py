@@ -93,6 +93,16 @@ def push_space(
     _print_summary(diff)
 
     rich_content_conflicts = find_rich_content_conflicts(diff)
+    if dry_run:
+        _print_dry_run(diff)
+        if rich_content_conflicts:
+            _print_rich_content_conflicts(rich_content_conflicts)
+            _err.print(
+                "[yellow]A real push would be refused because the protected content above "
+                "cannot round-trip safely through Markdown.[/yellow]"
+            )
+        return result
+
     if rich_content_conflicts:
         _print_rich_content_conflicts(rich_content_conflicts)
         print_error(
@@ -100,10 +110,6 @@ def push_space(
             "Edit those pages in Docmost, or revert their local content/attachment changes. "
             "Title, icon, and parent-only changes remain safe."
         )
-
-    if dry_run:
-        _print_dry_run(diff)
-        return result
 
     # --- Execute changes ---
 

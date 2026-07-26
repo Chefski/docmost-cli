@@ -113,6 +113,71 @@ def test_nested_task_content_is_protected_from_gfm_flattening() -> None:
     assert "structure:taskItem.content" in analyze_prosemirror(content)
 
 
+def test_multi_paragraph_list_item_is_protected() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "bulletList",
+                "content": [
+                    {
+                        "type": "listItem",
+                        "content": [
+                            {"type": "paragraph", "content": []},
+                            {"type": "paragraph", "content": []},
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert "structure:listItem.content" in analyze_prosemirror(content)
+
+
+def test_non_gfm_table_header_layout_is_protected() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "table",
+                "content": [
+                    {
+                        "type": "tableRow",
+                        "content": [
+                            {
+                                "type": "tableCell",
+                                "attrs": {"colspan": 1, "rowspan": 1},
+                                "content": [{"type": "paragraph", "content": []}],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+
+    assert "structure:table.headers" in analyze_prosemirror(content)
+
+
+def test_image_title_is_protected_from_attachment_html_loss() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "image",
+                "attrs": {
+                    "src": "/api/files/image-id/diagram.png",
+                    "attachmentId": "image-id",
+                    "title": "Architecture tooltip",
+                },
+            }
+        ],
+    }
+
+    assert "attribute:image.title" in analyze_prosemirror(content)
+
+
 def test_pull_state_preserves_exact_raw_snapshot(tmp_path: Path) -> None:
     content = _load_fixture("unsupported_rich_content.json")
 
@@ -143,6 +208,8 @@ def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
     markdown = (
         "![Diagram](/api/files/image-id/diagram.png)\n"
         "[PDF](https://docs.example.com/api/files/pdf-id/file.pdf)\n"
+        "Literal /api/files/image-id/diagram.png remains unchanged.\n"
+        "```\n/api/files/pdf-id/file.pdf\n```\n"
     )
 
     rewritten = rewrite_attachment_urls(
@@ -155,6 +222,8 @@ def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
 
     assert "![Diagram](files/image-id/diagram.png)" in rewritten
     assert "[PDF](files/pdf-id/file.pdf)" in rewritten
+    assert "Literal /api/files/image-id/diagram.png remains unchanged." in rewritten
+    assert "```\n/api/files/pdf-id/file.pdf\n```" in rewritten
 
 
 def test_content_edit_is_blocked_when_pull_found_unsafe_features() -> None:
@@ -197,6 +266,25 @@ def test_metadata_only_edit_is_not_blocked() -> None:
     )
 
     assert find_rich_content_conflicts(SyncDiff(modified=[change])) == []
+
+
+def test_missing_unsafe_feature_list_fails_closed() -> None:
+    change = PageChange(
+        page_id="page-1",
+        filename="broken.md",
+        changes={ChangeType.CONTENT_CHANGED},
+        local_meta={"title": "Broken guard"},
+        manifest_entry={
+            "rich_content": {
+                "guard_version": 1,
+                "source": "prosemirror",
+            }
+        },
+    )
+
+    conflicts = find_rich_content_conflicts(SyncDiff(modified=[change]))
+
+    assert conflicts[0].features == ("guard:invalid-metadata",)
 
 
 def test_legacy_manifest_entry_remains_compatible() -> None:

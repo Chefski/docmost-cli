@@ -1060,6 +1060,48 @@ class TestPushDryRun:
         assert result.created == 0
         assert result.updated == 0
 
+    def test_dry_run_reports_protected_content_without_failing(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        old_body = "Mention: Ada\n"
+        new_body = "Mention removed\n"
+        entry = build_page_entry(
+            title="Rich Page",
+            filename="rich.md",
+            parent_id=None,
+            icon="",
+            content_hash=compute_content_hash(old_body),
+            rich_content={
+                "guard_version": 1,
+                "source": "prosemirror",
+                "snapshot_path": ".docmost/raw-pages/page.json",
+                "unsafe_features": ["node:mention"],
+            },
+        )
+        target = _setup_synced_dir(tmp_path, pages={FAKE_PAGE_ID: entry})
+        _write_page(
+            target,
+            "rich.md",
+            page_id=FAKE_PAGE_ID,
+            title="Rich Page",
+            body=new_body,
+        )
+        _mock_resolve_space(httpx_mock)
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target, dry_run=True)
+
+        captured = capsys.readouterr()
+        assert result.updated == 0
+        assert "UPDATE rich.md (content_changed)" in captured.out
+        assert "A real push would be refused" in captured.err
+        assert [str(request.url) for request in httpx_mock.get_requests()] == [
+            f"{_TEST_URL}/api/spaces"
+        ]
+
 
 # ---------------------------------------------------------------------------
 # push_space — deletions

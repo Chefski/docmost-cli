@@ -142,12 +142,6 @@ def pull_space(
         content_data = get_page_content(client, page_id)
         pm_content = content_data.get("content")
         rich_content = build_pulled_rich_content_state(dir_path, page_id, pm_content)
-        unsafe_features = rich_content["unsafe_features"]
-        if unsafe_features:
-            protected_pages += 1
-            _err.print(
-                f"  [yellow]Protected rich content:[/yellow] {title} ({', '.join(unsafe_features)})"
-            )
 
         attachment_ids = collect_attachment_ids(pm_content)
         attachment_paths: dict[str, str] = {}
@@ -172,6 +166,10 @@ def pull_space(
 
         canonical_markdown = fetch_canonical_markdown(client, page_id)
         if canonical_markdown is None:
+            unsafe_features = rich_content["unsafe_features"]
+            if "conversion:local-fallback" not in unsafe_features:
+                unsafe_features.append("conversion:local-fallback")
+                unsafe_features.sort()
             _err.print(
                 f"  [yellow]Server Markdown conversion unavailable for '{title}'; "
                 "using the local converter.[/yellow]"
@@ -183,6 +181,13 @@ def pull_space(
             )
         else:
             markdown = rewrite_attachment_urls(canonical_markdown, attachment_paths)
+
+        unsafe_features = rich_content["unsafe_features"]
+        if unsafe_features:
+            protected_pages += 1
+            _err.print(
+                f"  [yellow]Protected rich content:[/yellow] {title} ({', '.join(unsafe_features)})"
+            )
 
         # Generate filename and write file
         filename = sanitize_filename(title, page_id)

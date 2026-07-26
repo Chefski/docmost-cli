@@ -141,6 +141,7 @@ def _mock_page_content(
     title: str,
     pm_content: dict | None = None,
     markdown_content: str | None = None,
+    canonical_available: bool = True,
 ) -> None:
     """Add raw-content and canonical-Markdown page responses."""
     content = pm_content or _PM_DOC
@@ -160,17 +161,25 @@ def _mock_page_content(
         status_code=404,
     )
     # Rich-content-safe pull asks the server to perform canonical conversion.
-    httpx_mock.add_response(
-        url=f"{_TEST_URL}/api/pages/info",
-        json={
-            "id": page_id,
-            "title": title,
-            "spaceId": "space-1",
-            "content": (
-                markdown_content if markdown_content is not None else convert_to_markdown(content)
-            ),
-        },
-    )
+    if canonical_available:
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": page_id,
+                "title": title,
+                "spaceId": "space-1",
+                "content": (
+                    markdown_content
+                    if markdown_content is not None
+                    else convert_to_markdown(content)
+                ),
+            },
+        )
+    else:
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            status_code=404,
+        )
 
 
 class TestPullEmptySpace:
@@ -287,6 +296,40 @@ class TestPullCreatesFiles:
         assert guard["unsafe_features"] == ["node:mention"]
         snapshot = target / guard["snapshot_path"]
         assert json.loads(snapshot.read_text(encoding="utf-8")) == rich_doc
+
+    def test_local_converter_fallback_is_protected(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Fallback Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        _mock_page_content(
+            httpx_mock,
+            "p1",
+            "Fallback Page",
+            canonical_available=False,
+        )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert manifest["pages"]["p1"]["rich_content"]["unsafe_features"] == [
+            "conversion:local-fallback"
+        ]
 
 
 class TestPullAttachments:

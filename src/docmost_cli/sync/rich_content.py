@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -60,6 +60,14 @@ _MARKDOWN_NODES = {
     "mathBlock",
 }
 _MARKDOWN_MARKS = {"bold", "italic", "strike", "code", "link"}
+_MARKDOWN_LINK_RE = re.compile(
+    r"(?P<prefix>!?\[[^\]]*\]\()"
+    r"(?P<destination><[^>]+>|[^\s)]+)"
+    r"(?P<suffix>(?:\s+(?:\"[^\"]*\"|'[^']*'))?\))"
+)
+_SERVER_ATTACHMENT_URL_RE = re.compile(
+    r"^(?:https?://[^/\s)>]+)?/(?:api/)?files/(?P<attachment_id>[^/]+)/[^\s)>\"']+$"
+)
 
 
 @dataclass(frozen=True)
@@ -145,17 +153,25 @@ def fetch_canonical_markdown(client: DocmostClient, page_id: str) -> str | None:
 
 
 def rewrite_attachment_urls(markdown: str, attachment_paths: Mapping[str, str]) -> str:
-    """Rewrite Docmost attachment URLs in canonical Markdown to local paths."""
-    rewritten = markdown
-    for attachment_id, local_path in attachment_paths.items():
-        identifiers = {attachment_id, quote(attachment_id, safe="")}
-        for identifier in identifiers:
-            pattern = re.compile(
-                rf"(?:https?://[^/\s)>]+)?/(?:api/)?files/{re.escape(identifier)}/"
-                r"[^\s)>\"']+"
-            )
-            rewritten = pattern.sub(local_path, rewritten)
-    return rewritten
+    """Rewrite only Markdown link/image destinations, leaving literal URLs intact."""
+
+    def replace_destination(match: re.Match[str]) -> str:
+        raw_destination = match.group("destination")
+        destination = (
+            raw_destination[1:-1]
+            if raw_destination.startswith("<") and raw_destination.endswith(">")
+            else raw_destination
+        )
+        server_match = _SERVER_ATTACHMENT_URL_RE.fullmatch(destination)
+        if server_match is None:
+            return match.group(0)
+        decoded_id = unquote(server_match.group("attachment_id"))
+        local_path = attachment_paths.get(decoded_id)
+        if local_path is None:
+            return match.group(0)
+        return f"{match.group('prefix')}{local_path}{match.group('suffix')}"
+
+    return _MARKDOWN_LINK_RE.sub(replace_destination, markdown)
 
 
 def build_pulled_rich_content_state(
@@ -214,7 +230,7 @@ def find_rich_content_conflicts(
             features = ("guard:invalid-metadata",)
             snapshot_path = None
         else:
-            raw_features = state.get("unsafe_features", [])
+            raw_features = state.get("unsafe_features")
             if not isinstance(raw_features, list) or not all(
                 isinstance(feature, str) for feature in raw_features
             ):
@@ -312,7 +328,7 @@ def _check_node_attributes(
             "placeholder",
         }
         _flag_nondefault(raw_attrs, "align", {None, "", "center"}, node_type, features)
-        for attr in ("width", "height", "aspectRatio", "placeholder"):
+        for attr in ("title", "width", "height", "aspectRatio", "placeholder"):
             _flag_nondefault(raw_attrs, attr, {None, "", 0}, node_type, features)
     elif node_type == "callout":
         allowed = {"type", "icon"}
@@ -341,7 +357,10 @@ def _check_node_structure(
     features: set[str],
 ) -> None:
     """Flag valid ProseMirror structures that GFM flattens during import."""
-    if node_type not in {"taskItem", "tableCell", "tableHeader"}:
+    if node_type == "table":
+        _check_table_headers(raw_content, features)
+        return
+    if node_type not in {"listItem", "taskItem", "tableCell", "tableHeader"}:
         return
     if not isinstance(raw_content, list):
         return
@@ -351,6 +370,24 @@ def _check_node_structure(
     child = raw_content[0]
     if not isinstance(child, dict) or child.get("type") != "paragraph":
         features.add(f"structure:{node_type}.content")
+
+
+def _check_table_headers(raw_content: object, features: set[str]) -> None:
+    """Require the single header-row shape representable by GFM tables."""
+    if not isinstance(raw_content, list) or not raw_content:
+        return
+    for row_index, row in enumerate(raw_content):
+        if not isinstance(row, dict) or row.get("type") != "tableRow":
+            features.add("structure:table.headers")
+            return
+        cells = row.get("content")
+        if not isinstance(cells, list):
+            features.add("structure:table.headers")
+            return
+        expected_type = "tableHeader" if row_index == 0 else "tableCell"
+        if any(not isinstance(cell, dict) or cell.get("type") != expected_type for cell in cells):
+            features.add("structure:table.headers")
+            return
 
 
 def _flag_nondefault(
