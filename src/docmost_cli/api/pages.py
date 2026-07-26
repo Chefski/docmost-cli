@@ -472,24 +472,25 @@ def import_page(
     space_id: str,
     file_name: str,
     file_bytes: bytes,
-    parent_page_id: str | None = None,
 ) -> dict[str, Any]:
     """Import a file as a new page via multipart upload.
+
+    Docmost's single-page import endpoint only consumes the uploaded file and
+    ``spaceId``. Callers must apply title or parent overrides through the page
+    update and move endpoints after the import returns.
 
     Args:
         client: Authenticated Docmost client.
         space_id: Target space UUID.
         file_name: Original filename (used for MIME detection and upload).
         file_bytes: Raw file content bytes.
-        parent_page_id: Parent page UUID (optional).
 
     Returns:
         Raw API response dict (should contain new page ID).
     """
     mime = "text/html" if file_name.lower().endswith((".html", ".htm")) else "text/markdown"
     files = {"file": (file_name, file_bytes, mime)}
-    data = build_body({"spaceId": space_id}, parentPageId=parent_page_id)
-    return client.post_multipart("/pages/import", data=data, files=files)
+    return client.post_multipart("/pages/import", data={"spaceId": space_id}, files=files)
 
 
 def import_page_archive(
