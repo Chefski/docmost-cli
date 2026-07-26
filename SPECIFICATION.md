@@ -171,7 +171,7 @@ docmost-cli page delete <page-id>                 # Delete a page (requires conf
 docmost-cli page move <page-id>                   # Move a page
   --parent <page-id>                          # New parent
   --root                                      # Move to the space root
-  --space <space-slug>                        # Move to different space (cannot combine)
+  --space <space-slug>                        # Cannot combine with --parent, --root, or --position
   --position <fractional-index>               # Position among siblings (5-12 chars)
 
 docmost-cli page duplicate <page-id>              # Duplicate a page
