@@ -490,6 +490,9 @@ failures because the server may already have committed the change. Session
 authentication may replay a request once after a 401 because the unauthorized
 request was rejected before the operation was accepted. `Retry-After` is honored
 for retryable responses, with a 60-second maximum delay.
+One-shot streaming request bodies are sent only once; callers must supply bytes,
+a list or tuple of byte chunks, or seekable multipart files before a request can
+be replayed.
 
 ---
 
