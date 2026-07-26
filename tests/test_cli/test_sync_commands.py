@@ -197,6 +197,44 @@ class TestSyncStatusCommand:
         assert result.exit_code == 0
         assert "Modified" in result.output
 
+    def test_status_reports_combined_update_and_move(self, tmp_config, tmp_path: Path) -> None:
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id="old-parent",
+                    icon="",
+                    content_hash=compute_content_hash("Old body.\n"),
+                )
+            },
+        )
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            parent_id="new-parent",
+            body="New body.\n",
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "sync",
+                "status",
+                "eng",
+                "--dir",
+                str(target),
+            ],
+        )
+        assert result.exit_code == 0
+        assert "Modified:  1 file(s)" in result.output
+        assert "Moved:     1 file(s)" in result.output
+
     def test_status_new_file(self, tmp_config, tmp_path: Path) -> None:
         target = _setup_synced_dir(tmp_path, pages={})
         _write_page(
@@ -358,6 +396,52 @@ class TestSyncPushDryRunCommand:
         )
         assert result.exit_code == 0
         assert "UPDATE" in result.output
+
+    def test_push_dry_run_reports_combined_update_and_move(
+        self,
+        tmp_config,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id="old-parent",
+                    icon="",
+                    content_hash=compute_content_hash("Old body.\n"),
+                )
+            },
+        )
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            parent_id="new-parent",
+            body="New body.\n",
+        )
+
+        _mock_resolve_space(httpx_mock)
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "sync",
+                "push",
+                "eng",
+                "--dir",
+                str(target),
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0
+        assert "UPDATE page.md (content_changed)" in result.output
+        assert "MOVE   page.md -> parent:new-parent" in result.output
 
     def test_push_dry_run_new_page(self, tmp_config, httpx_mock, tmp_path: Path) -> None:
         target = _setup_synced_dir(tmp_path, pages={})

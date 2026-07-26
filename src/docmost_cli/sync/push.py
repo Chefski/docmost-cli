@@ -195,24 +195,25 @@ def push_space(
                 icon=icon if ChangeType.ICON_CHANGED in change.changes else None,
             )
 
-        # Update manifest entry
+        # Record successful content/metadata updates, but preserve the previous
+        # parent until the separate move request succeeds.
+        manifest_parent_id = parent_id
+        if ChangeType.MOVED in change.changes:
+            manifest_parent_id = (change.manifest_entry or {}).get("parent_id") or None
+
         content_hash = compute_content_hash(body)
         manifest["pages"][page_id] = build_page_entry(
             title=title,
             filename=change.filename,
-            parent_id=parent_id,
+            parent_id=manifest_parent_id,
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
         )
         result.updated += 1
 
-    # Phase B2: Move pages (that weren't already handled as part of modified)
-    modified_ids = {c.page_id for c in diff.modified}
+    # Phase B2: Move pages after any content/metadata updates have succeeded.
     for change in diff.moved:
-        if change.page_id in modified_ids:
-            continue
-
         meta = change.local_meta or {}
         page_id = change.page_id
         parent_id = meta.get("parent_id", "").strip() or None
@@ -349,9 +350,7 @@ def _print_summary(diff: SyncDiff) -> None:
     if diff.modified:
         lines.append(f"  Update:    {len(diff.modified)} page(s)")
     if diff.moved:
-        move_only = [c for c in diff.moved if c not in diff.modified]
-        if move_only:
-            lines.append(f"  Move:      {len(move_only)} page(s)")
+        lines.append(f"  Move:      {len(diff.moved)} page(s)")
     if diff.deleted:
         lines.append(f"  Delete:    {len(diff.deleted)} page(s)")
     lines.append(f"  Unchanged: {diff.unchanged} page(s)")
@@ -371,11 +370,8 @@ def _print_dry_run(diff: SyncDiff) -> None:
         types = ", ".join(c.value for c in change.changes if c != ChangeType.MOVED)
         sys.stdout.write(f"UPDATE {change.filename} ({types})\n")
     for change in diff.moved:
-        if change not in diff.modified:
-            meta = change.local_meta or {}
-            sys.stdout.write(
-                f"MOVE   {change.filename} -> parent:{meta.get('parent_id', 'root')}\n"
-            )
+        meta = change.local_meta or {}
+        sys.stdout.write(f"MOVE   {change.filename} -> parent:{meta.get('parent_id', 'root')}\n")
     for change in diff.deleted:
         entry = change.manifest_entry or {}
         sys.stdout.write(f"DELETE {entry.get('filename', '?')} ({entry.get('title', '?')})\n")
