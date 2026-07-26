@@ -23,6 +23,7 @@ __all__ = [
     "MANIFEST_VERSION",
     "build_manifest",
     "build_page_entry",
+    "build_server_revision",
     "compute_content_hash",
     "load_manifest",
     "sanitize_filename",
@@ -30,7 +31,8 @@ __all__ = [
 ]
 
 MANIFEST_FILENAME = ".docmost-manifest.json"
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
+SERVER_REVISION_VERSION = 1
 
 _UNSAFE_CHARS_RE = re.compile(r'[/\\:*?"<>|]')
 _MULTI_DASH_RE = re.compile(r"-{2,}")
@@ -84,6 +86,41 @@ def compute_content_hash(content: str) -> str:
     normalized = content.rstrip()
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
     return f"sha256:{digest}"
+
+
+def build_server_revision(page: dict[str, Any]) -> dict[str, Any]:
+    """Build a canonical fingerprint of server-controlled page state.
+
+    The fingerprint is computed directly from the raw ``/pages/info`` JSON
+    response. It intentionally does not use locally converted Markdown, so
+    formatting normalization during ProseMirror-to-Markdown conversion cannot
+    create false remote-change conflicts.
+
+    ``updatedAt`` is retained for conflict diagnostics but is not part of the
+    fingerprint. Docmost may advance that timestamp for a no-op metadata write;
+    only a material change to state represented by sync should conflict.
+    """
+    state = {
+        "id": page.get("id"),
+        "spaceId": page.get("spaceId"),
+        "parentPageId": page.get("parentPageId") or None,
+        "title": page.get("title") or "",
+        "icon": page.get("icon") or "",
+        "content": page.get("content"),
+        "deletedAt": page.get("deletedAt"),
+    }
+    canonical = json.dumps(
+        state,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return {
+        "version": SERVER_REVISION_VERSION,
+        "fingerprint": f"sha256:{digest}",
+        "updated_at": page.get("updatedAt"),
+    }
 
 
 def load_manifest(dir_path: Path) -> dict[str, Any] | None:
@@ -159,6 +196,7 @@ def build_manifest(
             icon=page.get("icon", ""),
             content_hash=page["content_hash"],
             attachment_ids=page.get("attachment_ids", []),
+            server_revision=page.get("server_revision"),
         )
     return {
         "version": MANIFEST_VERSION,
@@ -177,6 +215,7 @@ def build_page_entry(
     icon: str,
     content_hash: str,
     attachment_ids: list[str] | None = None,
+    server_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a single page entry for inclusion in the manifest.
 
@@ -186,6 +225,8 @@ def build_page_entry(
         parent_id: Parent page ID, or ``None`` for root pages.
         icon: Page icon (emoji or empty string).
         content_hash: Content hash from :func:`compute_content_hash`.
+        attachment_ids: Attachment IDs referenced by the page.
+        server_revision: Canonical revision from :func:`build_server_revision`.
 
     Returns:
         A dict representing one page in the manifest ``pages`` map.
@@ -199,4 +240,6 @@ def build_page_entry(
     }
     if attachment_ids:
         entry["attachment_ids"] = attachment_ids
+    if server_revision:
+        entry["server_revision"] = server_revision
     return entry

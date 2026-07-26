@@ -16,6 +16,7 @@ docmost\-cli\-sync \- synchronize Docmost pages with local Markdown files
 .IR path ]
 .RB [ \-\-dry\-run ]
 .RB [ \-\-delete ]
+.RB [ \-\-force ]
 .br
 .B docmost\-cli sync status
 .I space\-slug
@@ -29,8 +30,8 @@ Each page is stored as a single Markdown file with YAML frontmatter
 containing page metadata.
 A
 .I .docmost\-manifest.json
-file tracks sync state using SHA\-256 content hashes for change detection
-(timestamps are not used).
+file tracks local Markdown hashes and canonical SHA\-256 fingerprints of raw
+server page state for change detection.
 .SS Local directory format
 After
 .BR "sync pull" ,
@@ -121,6 +122,22 @@ Show what changes would be applied without executing them.
 Delete server pages that are not found locally.
 Without this flag, pages deleted from the local directory are
 left untouched on the server.
+.TP
+.B \-\-force
+Apply local changes even when the server page changed since the last pull.
+Without this flag, push checks every page to be updated, moved, or deleted
+against its raw
+.B /pages/info
+revision before making any mutation and aborts the entire push on conflict.
+Forced conflicting pages keep their previous baseline; pull again before the
+next normal push.
+.PP
+Manifests created before remote revision tracking remain readable, but their
+existing pages require a fresh
+.B sync pull \-\-force
+or an explicit
+.B sync push \-\-force
+before mutation.
 .SS status
 Show changes between local files and the last\-pulled state.
 .PP
@@ -174,6 +191,14 @@ Push changes non\-interactively, deleting removed pages:
 .RS 4
 .EX
 $ docmost\-cli \-y sync push engineering \-\-delete
+.EE
+.RE
+.PP
+Deliberately apply local changes after reviewing a remote conflict:
+.PP
+.RS 4
+.EX
+$ docmost\-cli sync push engineering \-\-force
 .EE
 .RE
 .PP

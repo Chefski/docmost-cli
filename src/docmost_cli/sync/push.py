@@ -35,6 +35,7 @@ def push_space(
     *,
     dry_run: bool = False,
     delete: bool = False,
+    force: bool = False,
     diff: SyncDiff | None = None,
 ) -> PushResult:
     """Push local changes to Docmost server.
@@ -45,6 +46,7 @@ def push_space(
         dir_path: Directory containing synced files.
         dry_run: If True, show plan without executing changes.
         delete: If True, delete server pages not found locally.
+        force: Apply local changes despite stale remote revision baselines.
         diff: Pre-computed diff (avoids recomputing if caller already has it).
 
     Returns:
@@ -61,10 +63,12 @@ def push_space(
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.output.formatter import print_error
     from docmost_cli.sync.assets import prepare_markdown_assets
+    from docmost_cli.sync.conflicts import fetch_server_page, verify_remote_revisions
     from docmost_cli.sync.diff import compute_diff
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         build_page_entry,
+        build_server_revision,
         compute_content_hash,
         load_manifest,
         save_manifest,
@@ -91,10 +95,30 @@ def push_space(
         _print_dry_run(diff)
         return result
 
+    # Check every existing page before making any mutation. This keeps a
+    # conflict from being discovered after an unrelated new page was created.
+    existing_changes = [*diff.modified, *diff.moved]
+    if delete:
+        existing_changes.extend(diff.deleted)
+    preflight = verify_remote_revisions(client, existing_changes, force=force)
+
+    # A missing page cannot be overwritten. A missing page that was already
+    # deleted locally is treated as an idempotent deletion when --force is set.
+    deleted_ids = {change.page_id for change in diff.deleted} if delete else set()
+    unforceable_missing = preflight.missing_page_ids - deleted_ids
+    if unforceable_missing:
+        missing = ", ".join(sorted(unforceable_missing))
+        print_error(
+            "Cannot force updates for pages that no longer exist on the server "
+            f"({missing}). Run 'sync pull --force' to reconcile. No changes were pushed."
+        )
+
     # --- Execute changes ---
 
     id_remap: dict[str, str] = {}  # old_id -> new_id
     manifest.setdefault("assets", {})
+    revision_refresh_ids: set[str] = set()
+    forced_conflict_ids = preflight.conflict_page_ids if force else set()
 
     # Phase A: Create new pages (topological order)
     existing_ids = set(manifest.get("pages", {}).keys())
@@ -150,6 +174,7 @@ def push_space(
             content_hash=content_hash,
             attachment_ids=attachment_ids,
         )
+        revision_refresh_ids.add(new_id)
         existing_ids.add(new_id)
         result.created += 1
 
@@ -209,7 +234,10 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            server_revision=(change.manifest_entry or {}).get("server_revision"),
         )
+        if page_id not in forced_conflict_ids:
+            revision_refresh_ids.add(page_id)
         result.updated += 1
 
     # Phase B2: Move pages after any content/metadata updates have succeeded.
@@ -236,6 +264,8 @@ def push_space(
         # Update manifest
         if page_id in manifest["pages"]:
             manifest["pages"][page_id]["parent_id"] = parent_id
+        if page_id not in forced_conflict_ids:
+            revision_refresh_ids.add(page_id)
         result.moved += 1
 
     # Phase C: Deletions
@@ -244,7 +274,8 @@ def push_space(
             for change in diff.deleted:
                 entry = change.manifest_entry or {}
                 _err.print(f"  Deleting: {entry.get('title', change.page_id)}")
-                delete_page(client, change.page_id)
+                if change.page_id not in preflight.missing_page_ids:
+                    delete_page(client, change.page_id)
                 manifest["pages"].pop(change.page_id, None)
                 result.deleted += 1
         else:
@@ -255,6 +286,28 @@ def push_space(
 
     # Legacy field retained in the result contract; core page updates preserve IDs.
     result.id_remaps = id_remap
+
+    # Persist the canonical post-write state. Pages deliberately forced through
+    # a conflict keep their old baseline so a later non-forced push still
+    # requires a pull rather than silently treating a mixed local/remote state
+    # as fully reconciled.
+    for page_id in sorted(revision_refresh_ids):
+        page = fetch_server_page(
+            client,
+            page_id,
+            failure_suffix=(
+                "The page may have been updated, but the manifest was not saved. "
+                "Run 'sync pull --force' to reconcile."
+            ),
+        )
+        if page is None:
+            print_error(
+                f"Page {page_id} disappeared after it was updated. "
+                "The manifest was not saved; run 'sync pull --force' to reconcile."
+            )
+        entry = manifest["pages"].get(page_id)
+        if entry is not None:
+            entry["server_revision"] = build_server_revision(page)
 
     # Save manifest
     save_manifest(dir_path, manifest)

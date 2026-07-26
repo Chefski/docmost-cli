@@ -88,6 +88,7 @@ def pull_space(
     from docmost_cli.sync.manifest import (
         build_manifest,
         build_page_entry,
+        build_server_revision,
         compute_content_hash,
         load_manifest,
         sanitize_filename,
@@ -180,6 +181,7 @@ def pull_space(
             icon=page_info["icon"],
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            server_revision=build_server_revision(content_data),
         )
         page_entries.append({"id": page_id, **entry})
 

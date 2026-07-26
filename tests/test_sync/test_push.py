@@ -17,7 +17,9 @@ from docmost_cli.sync.assets import compute_file_hash
 from docmost_cli.sync.diff import PageChange
 from docmost_cli.sync.frontmatter import read_sync_file, write_sync_file
 from docmost_cli.sync.manifest import (
+    MANIFEST_VERSION,
     build_page_entry,
+    build_server_revision,
     compute_content_hash,
     load_manifest,
     save_manifest,
@@ -39,6 +41,10 @@ FAKE_PAGE_ID = "019a2a69-bbbb-cccc-dddd-eeeeeeeeeeee"
 FAKE_PAGE_ID_2 = "029b3b79-aaaa-bbbb-cccc-ffffffffffff"
 FAKE_PAGE_ID_3 = "039c4c89-1111-2222-3333-444444444444"
 FAKE_SPACE_ID = "space-uuid-123"
+_SERVER_CONTENT = {
+    "type": "doc",
+    "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Server"}]}],
+}
 
 
 def _make_client() -> DocmostClient:
@@ -48,12 +54,27 @@ def _make_client() -> DocmostClient:
 
 def _make_manifest(pages: dict | None = None) -> dict:
     """Build a minimal manifest dict for testing."""
+    prepared_pages: dict = {}
+    for page_id, entry in (pages or {}).items():
+        prepared_entry = dict(entry)
+        prepared_entry.setdefault(
+            "server_revision",
+            build_server_revision(
+                _server_page(
+                    page_id,
+                    title=str(prepared_entry.get("title") or ""),
+                    parent_id=prepared_entry.get("parent_id"),
+                    icon=str(prepared_entry.get("icon") or ""),
+                )
+            ),
+        )
+        prepared_pages[page_id] = prepared_entry
     return {
-        "version": 1,
+        "version": MANIFEST_VERSION,
         "space_slug": "eng",
         "space_id": FAKE_SPACE_ID,
         "synced_at": "2026-01-01T00:00:00+00:00",
-        "pages": pages or {},
+        "pages": prepared_pages,
     }
 
 
@@ -96,6 +117,34 @@ def _mock_resolve_space(httpx_mock, slug: str = "eng") -> None:
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/spaces",
         json={"data": {"items": [{"id": FAKE_SPACE_ID, "slug": slug, "name": slug.capitalize()}]}},
+    )
+
+
+def _server_page(
+    page_id: str,
+    *,
+    title: str,
+    parent_id: str | None = None,
+    icon: str = "",
+    content: dict | None = None,
+    updated_at: str = "2026-01-01T00:00:00.000Z",
+) -> dict:
+    return {
+        "id": page_id,
+        "title": title,
+        "icon": icon,
+        "parentPageId": parent_id,
+        "spaceId": FAKE_SPACE_ID,
+        "content": content or _SERVER_CONTENT,
+        "deletedAt": None,
+        "updatedAt": updated_at,
+    }
+
+
+def _mock_page_info(httpx_mock, page: dict) -> None:
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        json=page,
     )
 
 
@@ -377,6 +426,10 @@ class TestPushNewPage:
             url=f"{_TEST_URL}/api/pages/import",
             json={"id": new_page_id},
         )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(new_page_id, title="New Page"),
+        )
 
         with _make_client() as client:
             result = push_space(client, "eng", target)
@@ -438,6 +491,15 @@ class TestPushNewPage:
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": new_page_id}},
         )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                new_page_id,
+                title="Child Page",
+                parent_id=parent_id,
+                icon="star",
+            ),
+        )
 
         with _make_client() as client:
             result = push_space(client, "eng", target)
@@ -479,9 +541,25 @@ class TestPushContentUpdate:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="My Page"),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                content={
+                    "type": "doc",
+                    "content": [{"type": "paragraph", "content": []}],
+                },
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
         )
 
         with _make_client() as client:
@@ -528,9 +606,25 @@ class TestPushContentUpdateCommunity:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="My Page"),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                content={
+                    "type": "doc",
+                    "content": [{"type": "paragraph", "content": []}],
+                },
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
         )
 
         with _make_client() as client:
@@ -594,6 +688,10 @@ class TestPushAttachmentUpdate:
         save_manifest(target, manifest)
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="My Page"),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/files/upload",
             json={
@@ -608,14 +706,36 @@ class TestPushAttachmentUpdate:
             url=f"{_TEST_URL}/api/pages/update",
             json={"id": FAKE_PAGE_ID},
         )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                content={
+                    "type": "doc",
+                    "content": [{"type": "image"}],
+                },
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
 
         with _make_client() as client:
             result = push_space(client, "eng", target)
 
         assert result.updated == 1
-        upload_body = httpx_mock.get_requests()[1].read()
+        upload_request = next(
+            request
+            for request in httpx_mock.get_requests()
+            if str(request.url) == f"{_TEST_URL}/api/files/upload"
+        )
+        upload_body = upload_request.read()
         assert attachment_id.encode() in upload_body
-        update_payload = json.loads(httpx_mock.get_requests()[2].content)
+        update_request = next(
+            request
+            for request in httpx_mock.get_requests()
+            if str(request.url) == f"{_TEST_URL}/api/pages/update"
+        )
+        update_payload = json.loads(update_request.content)
         assert f'data-attachment-id="{attachment_id}"' in update_payload["content"]
         updated_manifest = load_manifest(target)
         assert updated_manifest["assets"][attachment_id]["content_hash"] == compute_file_hash(asset)
@@ -654,9 +774,21 @@ class TestPushMetaChange:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="Old Title"),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="New Title",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
         )
 
         with _make_client() as client:
@@ -697,9 +829,22 @@ class TestPushMetaChange:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="My Page", icon="old-icon"),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                icon="new-icon",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
         )
 
         with _make_client() as client:
@@ -742,9 +887,26 @@ class TestPushMoveOnly:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="Moved Page",
+                parent_id="old-parent",
+            ),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/move",
             json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="Moved Page",
+                parent_id="new-parent",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
         )
 
         with _make_client() as client:
@@ -1001,6 +1163,10 @@ class TestPushDeletions:
         # No .md files -> the manifest page is "deleted"
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="Deleted Page"),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/delete",
             json={"data": {}},
@@ -1039,6 +1205,184 @@ class TestPushDeletions:
         # Page should still be in manifest
         manifest = load_manifest(target)
         assert FAKE_PAGE_ID in manifest["pages"]
+
+
+# ---------------------------------------------------------------------------
+# push_space — remote conflicts
+# ---------------------------------------------------------------------------
+
+
+class TestPushRemoteConflicts:
+    """Remote state is checked before any push mutation."""
+
+    def test_remote_change_aborts_before_update(self, httpx_mock, tmp_path: Path) -> None:
+        old_body = "Old content.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                )
+            },
+        )
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body="Local content.\n",
+        )
+        _write_page(
+            target,
+            "new-page.md",
+            page_id="",
+            title="New Page",
+            body="New content.\n",
+        )
+        _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="Changed remotely",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            push_space(client, "eng", target)
+
+        urls = [str(request.url) for request in httpx_mock.get_requests()]
+        assert f"{_TEST_URL}/api/pages/update" not in urls
+        assert f"{_TEST_URL}/api/pages/import" not in urls
+
+    def test_force_applies_change_but_does_not_rebaseline_conflict(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        old_body = "Old content.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                )
+            },
+        )
+        original_manifest = load_manifest(target)
+        original_revision = original_manifest["pages"][FAKE_PAGE_ID]["server_revision"]
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body="Local content.\n",
+        )
+        _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="Changed remotely",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target, force=True)
+
+        assert result.updated == 1
+        manifest = load_manifest(target)
+        assert manifest["pages"][FAKE_PAGE_ID]["server_revision"] == original_revision
+
+    def test_old_manifest_is_safe_with_explicit_force(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash("Old content.\n"),
+                )
+            },
+        )
+        manifest = load_manifest(target)
+        manifest["version"] = 2
+        manifest["pages"][FAKE_PAGE_ID].pop("server_revision")
+        save_manifest(target, manifest)
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body="Local content.\n",
+        )
+        _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(FAKE_PAGE_ID, title="My Page"),
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target, force=True)
+
+        assert result.updated == 1
+
+    def test_force_delete_treats_already_missing_page_as_deleted(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="Deleted Page",
+                    filename="deleted.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash="sha256:abc",
+                )
+            },
+        )
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            status_code=404,
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target, delete=True, force=True)
+
+        assert result.deleted == 1
+        assert FAKE_PAGE_ID not in load_manifest(target)["pages"]
+        assert all(
+            str(request.url) != f"{_TEST_URL}/api/pages/delete"
+            for request in httpx_mock.get_requests()
+        )
 
 
 # ---------------------------------------------------------------------------

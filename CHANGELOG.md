@@ -8,6 +8,10 @@
 - Preserve attachments in page export/import through native portable ZIP archives
 - Preserve attachment IDs and bytes during sync using local `files/<attachment-id>/...` assets and manifest hashes
 - Use Docmost's shared `/pages/update` content contract so page IDs and attachment ownership remain stable on Community and Enterprise editions
+- Prevent sync pushes from overwriting remote page edits by checking canonical
+  `/pages/info` revision fingerprints before updates, moves, and deletions
+- Add `sync push --force` for explicit conflict overrides; older manifests
+  remain readable but require a fresh pull or `--force` before mutation
 
 ## 0.4.0 (2026-03-22)
 

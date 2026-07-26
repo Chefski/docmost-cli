@@ -277,12 +277,18 @@ Enables documentation-as-code workflows with git version control.
 
 ```
 docmost-cli sync pull <space>  [--dir PATH] [--force]     # Download pages → local Markdown files
-docmost-cli sync push <space>  [--dir PATH] [--dry-run] [--delete] [--yes]  # Upload local changes
+docmost-cli sync push <space>  [--dir PATH] [--dry-run] [--delete] [--force] [--yes]  # Upload local changes
 docmost-cli sync status <space> [--dir PATH]               # Show changes since last pull
 ```
 
 **Local directory format:**
 - Flat directory with `.docmost-manifest.json` tracking sync state
+- Manifest v3 stores a canonical SHA-256 fingerprint of raw `/pages/info`
+  content and metadata for every pulled page
+- Push checks all remote revisions before any update, move, or deletion;
+  stale and legacy baselines abort with page-level details
+- `sync push --force` explicitly applies local changes despite conflicts;
+  forced conflicting pages are not silently rebaselined
 - Each page is `{title}--{id_prefix}.md` with YAML frontmatter (`id`, `title`, `parent_id`, `icon`)
 - Referenced assets are stored as `files/{attachment_id}/{filename}` and tracked by hash/owner
 - Change detection via SHA-256 content hash (not timestamps)

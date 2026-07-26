@@ -128,6 +128,13 @@ their hashes and owning pages in `.docmost-manifest.json`. `sync push` uploads n
 replaces changed assets in place, while writing the stable attachment ID back into Docmost page
 content. Relative image/file links to existing local files are treated as page assets.
 
+Every pull also records a canonical fingerprint of each page's raw server state. Before updating,
+moving, or deleting a page, `sync push` verifies that fingerprint against `/pages/info` and aborts
+the entire push if the page changed remotely. Pull again to reconcile those changes. `sync push
+--force` deliberately bypasses a stale baseline; forced conflicting pages keep their previous
+baseline so a later normal push still requires a fresh pull. Manifests created before this
+protection remain readable, but mutating their pages requires a fresh pull or explicit `--force`.
+
 ## Configuration
 
 ### Config file location

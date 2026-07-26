@@ -12,7 +12,11 @@ if TYPE_CHECKING:
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
-from docmost_cli.sync.manifest import MANIFEST_FILENAME, MANIFEST_VERSION
+from docmost_cli.sync.manifest import (
+    MANIFEST_FILENAME,
+    MANIFEST_VERSION,
+    build_server_revision,
+)
 from docmost_cli.sync.pull import PullResult, flatten_tree, pull_space
 
 # ---------------------------------------------------------------------------
@@ -148,8 +152,11 @@ def _mock_page_content(
         json={
             "id": page_id,
             "title": title,
+            "icon": "",
+            "parentPageId": None,
             "spaceId": "space-1",
             "content": content,
+            "updatedAt": "2026-01-01T00:00:00.000Z",
         },
     )
     # post_raw -> POST /pages/content (Enterprise endpoint — return 404 to use fallback)
@@ -221,6 +228,18 @@ class TestPullCreatesFiles:
         assert len(manifest["pages"]) == 2
         assert "p1" in manifest["pages"]
         assert "p2" in manifest["pages"]
+        expected_revision = build_server_revision(
+            {
+                "id": "p1",
+                "title": "Page One",
+                "icon": "",
+                "parentPageId": None,
+                "spaceId": "space-1",
+                "content": _PM_DOC,
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+            }
+        )
+        assert manifest["pages"]["p1"]["server_revision"] == expected_revision
 
 
 class TestPullAttachments:
