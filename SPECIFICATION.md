@@ -286,6 +286,9 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
 - Each page is `{title}--{id_prefix}.md` with YAML frontmatter (`id`, `title`, `parent_id`, `icon`)
 - Referenced assets are stored as `files/{attachment_id}/{filename}` and tracked by hash/owner
 - Change detection via SHA-256 content hash (not timestamps)
+- Pulls stage and validate every managed file before replacing the live directory
+- Failed pulls leave the previous sync untouched
+- Forced pulls remove stale manifest-owned pages/assets but preserve unrelated local files
 
 **Stable content and asset updates:**
 - Both editions use `POST /pages/update` with `operation: replace`, preserving page IDs
@@ -716,7 +719,7 @@ def print_error(message: str, exit_code: int = 1) -> NoReturn:
 ### Phase 5: Sync
 - [x] `sync/manifest.py` — manifest load/save, content hashing, filename sanitization
 - [x] `sync/frontmatter.py` — YAML frontmatter parse/serialize (no PyYAML dependency)
-- [x] `sync/pull.py` — pull algorithm (tree → flatten → fetch content → write files)
+- [x] `sync/pull.py` — staged pull algorithm with validation, rollback, and stale managed-file cleanup
 - [x] `sync/push.py` — push algorithm (diff → create/update/move, edition-aware)
 - [x] `sync/diff.py` — change detection (new, modified, moved, deleted)
 - [x] `cli/sync_cmd.py` — `sync pull`, `sync push`, `sync status` commands

@@ -128,6 +128,11 @@ their hashes and owning pages in `.docmost-manifest.json`. `sync push` uploads n
 replaces changed assets in place, while writing the stable attachment ID back into Docmost page
 content. Relative image/file links to existing local files are treated as page assets.
 
+Pulls are staged and validated before the live directory is replaced. If any page or attachment
+fails to download, the previous sync remains unchanged. A forced pull removes stale pages and
+assets recorded by the old manifest, including files renamed remotely, while preserving unrelated
+local files.
+
 ## Configuration
 
 ### Config file location

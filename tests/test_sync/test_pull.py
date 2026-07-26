@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+import os
+from pathlib import Path
 
 import pytest
 
-if TYPE_CHECKING:
-    from pathlib import Path
-
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
-from docmost_cli.sync.manifest import MANIFEST_FILENAME, MANIFEST_VERSION
-from docmost_cli.sync.pull import PullResult, flatten_tree, pull_space
+from docmost_cli.sync.frontmatter import write_sync_file
+from docmost_cli.sync.manifest import (
+    MANIFEST_FILENAME,
+    MANIFEST_VERSION,
+    build_manifest,
+    compute_content_hash,
+    sanitize_filename,
+    save_manifest,
+)
+from docmost_cli.sync.pull import PullResult, _publish_staged_pull, flatten_tree, pull_space
 
 # ---------------------------------------------------------------------------
 # Helper: create a client for integration tests
@@ -159,6 +165,15 @@ def _mock_page_content(
     )
 
 
+def _snapshot_files(root: Path) -> dict[str, bytes]:
+    """Return every regular file beneath root for rollback comparisons."""
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in root.rglob("*")
+        if path.is_file()
+    }
+
+
 class TestPullEmptySpace:
     """Space with no pages creates dir + empty manifest."""
 
@@ -221,6 +236,7 @@ class TestPullCreatesFiles:
         assert len(manifest["pages"]) == 2
         assert "p1" in manifest["pages"]
         assert "p2" in manifest["pages"]
+        assert not list(tmp_path.glob(".test.pull-*"))
 
 
 class TestPullAttachments:
@@ -347,7 +363,7 @@ class TestPullWritesCorrectFrontmatter:
 class TestPullRefusesWithoutForce:
     """Existing manifest without --force should SystemExit."""
 
-    def test_refuses(self, httpx_mock, tmp_path: Path) -> None:
+    def test_refuses(self, tmp_path: Path) -> None:
         target = tmp_path / "test"
         target.mkdir(parents=True)
 
@@ -360,14 +376,6 @@ class TestPullRefusesWithoutForce:
             "pages": {"old-page": {"title": "Old", "filename": "Old--old-page.md"}},
         }
         (target / MANIFEST_FILENAME).write_text(json.dumps(manifest), encoding="utf-8")
-
-        _mock_resolve_space(httpx_mock)
-        _mock_sidebar_pages(
-            httpx_mock,
-            [
-                {"id": "p1", "title": "Page One", "icon": "", "hasChildren": False, "children": []},
-            ],
-        )
 
         with _make_client() as client, pytest.raises(SystemExit):
             pull_space(client, "test", target, force=False)
@@ -409,3 +417,314 @@ class TestPullOverwritesWithForce:
         new_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         assert "p1" in new_manifest["pages"]
         assert "old-page" not in new_manifest["pages"]
+
+
+class TestPullAtomicPublication:
+    """Pull stages a complete snapshot and rolls back every failed attempt."""
+
+    def test_partial_failure_preserves_previous_sync(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        old_filename = sanitize_filename("Previous Page", "old-page")
+        old_body = "Previous body.\n"
+        write_sync_file(
+            target / old_filename,
+            {
+                "id": "old-page",
+                "title": "Previous Page",
+                "parent_id": "",
+                "icon": "",
+            },
+            old_body,
+        )
+        save_manifest(
+            target,
+            build_manifest(
+                "test",
+                "space-1",
+                [
+                    {
+                        "id": "old-page",
+                        "title": "Previous Page",
+                        "filename": old_filename,
+                        "parent_id": None,
+                        "icon": "",
+                        "content_hash": compute_content_hash(old_body),
+                    }
+                ],
+            ),
+        )
+        (target / "personal-notes.txt").write_text("keep me", encoding="utf-8")
+        before = _snapshot_files(target)
+
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Downloaded First",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                },
+                {
+                    "id": "p2",
+                    "title": "Fails Second",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                },
+            ],
+        )
+        attachment_id = "partial-download-attachment"
+        _mock_page_content(
+            httpx_mock,
+            "p1",
+            "Downloaded First",
+            {
+                "type": "doc",
+                "content": [
+                    {
+                        "type": "image",
+                        "attrs": {
+                            "src": f"/api/files/{attachment_id}/partial.png",
+                            "attachmentId": attachment_id,
+                        },
+                    }
+                ],
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/info",
+            json={
+                "id": attachment_id,
+                "fileName": "partial.png",
+                "mimeType": "image/png",
+                "fileSize": 7,
+                "pageId": "p1",
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/{attachment_id}/partial.png",
+            content=b"partial",
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            status_code=400,
+            json={"message": "page unavailable"},
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            pull_space(client, "test", target, force=True)
+
+        assert _snapshot_files(target) == before
+        assert not list(tmp_path.glob(".test.pull-staging-*"))
+        assert not list(tmp_path.glob(".test.pull-backup-*"))
+
+    def test_publication_rename_failure_restores_previous_directory(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = tmp_path / ".test.pull-staging-manual"
+        staging.mkdir()
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_replace = os.replace
+
+        def fail_staging_publish(
+            source: str | os.PathLike[str], destination: str | os.PathLike[str]
+        ) -> None:
+            if Path(source) == staging:
+                raise OSError("simulated publish failure")
+            real_replace(source, destination)
+
+        monkeypatch.setattr("docmost_cli.sync.pull.os.replace", fail_staging_publish)
+
+        with pytest.raises(OSError, match="simulated publish failure"):
+            _publish_staged_pull(staging, target)
+
+        assert (target / "old.txt").read_text(encoding="utf-8") == "old"
+        assert not (target / "new.txt").exists()
+        assert not list(tmp_path.glob(".test.pull-backup-*"))
+
+
+class TestPullManagedCleanup:
+    """Forced pulls replace managed state while retaining unrelated files."""
+
+    def test_removes_stale_and_renamed_managed_files_only(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        current_id = "same-page-id"
+        deleted_id = "deleted-page-id"
+        old_filename = sanitize_filename("Old Title", current_id)
+        deleted_filename = sanitize_filename("Deleted Page", deleted_id)
+        for page_id, title, filename in (
+            (current_id, "Old Title", old_filename),
+            (deleted_id, "Deleted Page", deleted_filename),
+        ):
+            write_sync_file(
+                target / filename,
+                {"id": page_id, "title": title, "parent_id": "", "icon": ""},
+                "old\n",
+            )
+
+        old_asset = target / "files" / "old-asset" / "old.png"
+        stale_asset = target / "files" / "stale-asset" / "stale.png"
+        unrelated_asset = target / "files" / "manual" / "readme.txt"
+        for path, content in (
+            (old_asset, b"old"),
+            (stale_asset, b"stale"),
+            (unrelated_asset, b"unrelated"),
+        ):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(content)
+        (target / "personal-notes.md").write_text("unrelated notes", encoding="utf-8")
+
+        save_manifest(
+            target,
+            build_manifest(
+                "test",
+                "space-1",
+                [
+                    {
+                        "id": current_id,
+                        "title": "Old Title",
+                        "filename": old_filename,
+                        "parent_id": None,
+                        "icon": "",
+                        "content_hash": compute_content_hash("old\n"),
+                    },
+                    {
+                        "id": deleted_id,
+                        "title": "Deleted Page",
+                        "filename": deleted_filename,
+                        "parent_id": None,
+                        "icon": "",
+                        "content_hash": compute_content_hash("old\n"),
+                    },
+                ],
+                {
+                    "old-asset": {"path": "files/old-asset/old.png"},
+                    "stale-asset": {"path": "files/stale-asset/stale.png"},
+                },
+            ),
+        )
+
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": current_id,
+                    "title": "New Title",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        _mock_page_content(httpx_mock, current_id, "New Title")
+
+        with _make_client() as client:
+            pull_space(client, "test", target, force=True)
+
+        new_filename = sanitize_filename("New Title", current_id)
+        assert (target / new_filename).exists()
+        assert not (target / old_filename).exists()
+        assert not (target / deleted_filename).exists()
+        assert not old_asset.exists()
+        assert not stale_asset.exists()
+        assert unrelated_asset.read_bytes() == b"unrelated"
+        assert (target / "personal-notes.md").read_text(encoding="utf-8") == "unrelated notes"
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert set(manifest["pages"]) == {current_id}
+        assert manifest["assets"] == {}
+
+    def test_empty_space_removes_managed_state_and_keeps_unrelated_files(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        filename = sanitize_filename("Old Page", "old-page")
+        write_sync_file(
+            target / filename,
+            {"id": "old-page", "title": "Old Page", "parent_id": "", "icon": ""},
+            "old\n",
+        )
+        save_manifest(
+            target,
+            build_manifest(
+                "test",
+                "space-1",
+                [
+                    {
+                        "id": "old-page",
+                        "title": "Old Page",
+                        "filename": filename,
+                        "parent_id": None,
+                        "icon": "",
+                        "content_hash": compute_content_hash("old\n"),
+                    }
+                ],
+            ),
+        )
+        unrelated = target / "README.txt"
+        unrelated.write_text("local-only", encoding="utf-8")
+
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(httpx_mock, [])
+
+        with _make_client() as client:
+            result = pull_space(client, "test", target, force=True)
+
+        assert result.pages_pulled == 0
+        assert not (target / filename).exists()
+        assert unrelated.read_text(encoding="utf-8") == "local-only"
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert manifest["pages"] == {}
+        assert manifest["assets"] == {}
+
+
+class TestPullPathSafety:
+    """Staging paths stay outside the target on every supported platform."""
+
+    def test_normalizes_parent_segments_before_creating_staging(
+        self,
+        httpx_mock,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / "local.txt").write_text("keep", encoding="utf-8")
+        monkeypatch.chdir(tmp_path)
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(httpx_mock, [])
+
+        with _make_client() as client:
+            pull_space(client, "test", Path("workspace") / "child" / "..")
+
+        assert (workspace / MANIFEST_FILENAME).exists()
+        assert (workspace / "local.txt").read_text(encoding="utf-8") == "keep"
+        assert not list(workspace.glob(".*.pull-staging-*"))
+        assert not list(tmp_path.glob(".workspace.pull-*"))
+
+    def test_rejects_filesystem_root(self, tmp_path: Path) -> None:
+        root = Path(tmp_path.anchor)
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            pull_space(client, "test", root)
