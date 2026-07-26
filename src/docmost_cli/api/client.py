@@ -11,7 +11,7 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, cast
@@ -130,7 +130,8 @@ class DocmostClient:
             if response.status_code == 401 and self._auth.can_retry() and not body_replayable:
                 print_error(
                     "Session expired, but this request body cannot be replayed safely. "
-                    "Retry with bytes, a repeatable iterable, or a seekable file.",
+                    "Retry with bytes, a list or tuple of byte chunks, or seekable "
+                    "multipart files.",
                     exit_code=3,
                 )
             if (
@@ -229,20 +230,34 @@ class DocmostClient:
 
     @staticmethod
     def _content_is_replayable(content: Any) -> bool:
-        """Return whether raw request content can be iterated more than once."""
+        """Return whether raw content is a known-repeatable byte source."""
         if content is None or isinstance(content, (str, bytes)):
             return True
-        try:
-            return iter(content) is not content
-        except TypeError:
-            return False
+        return type(content) in (list, tuple) and all(isinstance(chunk, bytes) for chunk in content)
 
     @staticmethod
-    def _files_are_replayable(files: dict[str, Any] | None) -> bool:
+    def _data_is_replayable(data: Any) -> bool:
+        """Return whether form or legacy streaming data can be rebuilt safely."""
+        if data is None or isinstance(data, Mapping):
+            return True
+        return DocmostClient._content_is_replayable(data)
+
+    @staticmethod
+    def _files_are_replayable(files: Any) -> bool:
         """Return whether multipart file values are bytes or seekable streams."""
         if not files:
             return True
-        for value in files.values():
+
+        if isinstance(files, Mapping):
+            values: Iterable[Any] = files.values()
+        elif type(files) in (list, tuple):
+            if not all(type(item) in (list, tuple) and len(item) == 2 for item in files):
+                return False
+            values = (item[1] for item in files)
+        else:
+            return False
+
+        for value in values:
             file_value = value[1] if isinstance(value, tuple) and len(value) >= 2 else value
             if isinstance(file_value, (str, bytes)):
                 continue
@@ -280,8 +295,9 @@ class DocmostClient:
             return self._http.build_request(method, url, **kwargs)
 
         body_replayable = self._content_is_replayable(kwargs.get("content"))
+        body_replayable = body_replayable and self._data_is_replayable(kwargs.get("data"))
         files = kwargs.get("files")
-        if isinstance(files, dict):
+        if files is not None:
             body_replayable = body_replayable and self._files_are_replayable(files)
         response = self._send_with_retry(
             request_factory,
