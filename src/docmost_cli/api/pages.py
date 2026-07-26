@@ -4,10 +4,11 @@ from typing import Any
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pagination import build_body
-from docmost_cli.output.formatter import print_error
+from docmost_cli.output.formatter import print_error, print_result
 
 __all__ = [
     "POSITION_FIRST",
+    "PageImportPlacementError",
     "build_page_tree",
     "copy_page",
     "create_and_place_page",
@@ -32,6 +33,25 @@ __all__ = [
 
 # Fractional index string meaning "place at beginning" in Docmost's ordering.
 POSITION_FIRST = "aaaaa"
+
+
+class PageImportPlacementError(SystemExit):
+    """Raised when a page is imported but its requested placement fails.
+
+    The original import response and page ID remain available so callers can
+    recover the page without retrying the import and creating a duplicate.
+    """
+
+    def __init__(
+        self,
+        *,
+        page_id: str,
+        result: dict[str, Any],
+        cause: SystemExit,
+    ) -> None:
+        super().__init__(cause.code)
+        self.page_id = page_id
+        self.result = result
 
 
 def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
@@ -497,12 +517,24 @@ def import_page(
     result = client.post_multipart("/pages/import", data={"spaceId": space_id}, files=files)
 
     if parent_page_id is not None:
-        move_page(
-            client,
-            page_id=extract_id(result),
-            parent_page_id=parent_page_id,
-            position=POSITION_FIRST,
-        )
+        page_id = extract_id(result)
+        try:
+            move_page(
+                client,
+                page_id=page_id,
+                parent_page_id=parent_page_id,
+                position=POSITION_FIRST,
+            )
+        except SystemExit as exc:
+            print_result(
+                page_id,
+                f"Imported page {page_id}, but failed to move it under the requested parent.",
+            )
+            raise PageImportPlacementError(
+                page_id=page_id,
+                result=result,
+                cause=exc,
+            ) from exc
 
     return result
 

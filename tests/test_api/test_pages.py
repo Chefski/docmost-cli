@@ -6,6 +6,7 @@ import pytest
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pages import (
+    PageImportPlacementError,
     copy_page,
     create_page_via_import,
     delete_page,
@@ -358,6 +359,40 @@ class TestImportPage:
             "parentPageId": "parent-1",
             "position": "aaaaa",
         }
+
+    def test_failed_parent_move_preserves_import_result(
+        self,
+        httpx_mock,
+        api_key_settings,
+        capsys,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page", "title": "Page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            status_code=404,
+        )
+
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(PageImportPlacementError) as exc,
+        ):
+            import_page(
+                client,
+                space_id="space-1",
+                file_name="page.md",
+                file_bytes=b"# Page",
+                parent_page_id="missing-parent",
+            )
+
+        assert exc.value.code == 4
+        assert exc.value.page_id == "imported-page"
+        assert exc.value.result == {"id": "imported-page", "title": "Page"}
+        captured = capsys.readouterr()
+        assert captured.out == "imported-page\n"
+        assert "failed to move it under the requested parent" in captured.err
 
 
 class TestGetSidebarPages:
