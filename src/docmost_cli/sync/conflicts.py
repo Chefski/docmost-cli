@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shlex
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -9,6 +10,7 @@ from docmost_cli.sync.manifest import SERVER_REVISION_VERSION, build_server_revi
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
+    from pathlib import Path
 
     from docmost_cli.api.client import DocmostClient
     from docmost_cli.sync.diff import PageChange
@@ -17,8 +19,11 @@ __all__ = [
     "RemoteConflict",
     "RemotePreflight",
     "fetch_server_page",
+    "format_reconciliation_guidance",
     "verify_remote_revisions",
 ]
+
+_REVISION_ALLOWED_STATUSES = frozenset({404, 429, 500, 502, 503, 504})
 
 
 @dataclass(frozen=True)
@@ -64,19 +69,15 @@ def fetch_server_page(
     response = client.post_raw(
         "/pages/info",
         json={"pageId": page_id},
-        raise_on_error=False,
+        retry_safe=True,
+        allowed_statuses=_REVISION_ALLOWED_STATUSES,
     )
-    if response.status_code == 401:
-        # Route session-auth expiry through the client's normal refresh path.
-        from docmost_cli.api.pages import get_page_info
-
-        return get_page_info(client, page_id)
     if response.status_code == 404:
         return None
     if not response.is_success:
-        status = f"HTTP {response.status_code}" if response.status_code else "network error"
         print_error(
-            f"Could not verify the remote revision for page {page_id} ({status}). {failure_suffix}"
+            f"Could not verify the remote revision for page {page_id} "
+            f"(HTTP {response.status_code}). {failure_suffix}"
         )
 
     try:
@@ -93,6 +94,41 @@ def fetch_server_page(
             f"Could not verify the remote revision for page {page_id}: "
             f"the server response did not contain page state. {failure_suffix}"
         )
+
+    # Older Docmost releases may expose content separately from page metadata.
+    # Enrich both pull and preflight through the same path so their fingerprints
+    # remain comparable across server versions.
+    if "content" not in data:
+        content_response = client.post_raw(
+            "/pages/content",
+            json={"pageId": page_id},
+            retry_safe=True,
+            allowed_statuses=_REVISION_ALLOWED_STATUSES,
+        )
+        if content_response.status_code != 404:
+            if not content_response.is_success:
+                print_error(
+                    f"Could not verify the remote revision for page {page_id} "
+                    f"(HTTP {content_response.status_code}). {failure_suffix}"
+                )
+            try:
+                content_result = content_response.json()
+            except ValueError:
+                print_error(
+                    f"Could not verify the remote revision for page {page_id}: "
+                    f"the server returned invalid content JSON. {failure_suffix}"
+                )
+            content_data = (
+                content_result.get("data", content_result)
+                if isinstance(content_result, dict)
+                else {}
+            )
+            if not isinstance(content_data, dict) or "content" not in content_data:
+                print_error(
+                    f"Could not verify the remote revision for page {page_id}: "
+                    f"the server response did not contain page content. {failure_suffix}"
+                )
+            data = {**data, "content": content_data["content"]}
     return data
 
 
@@ -100,14 +136,18 @@ def verify_remote_revisions(
     client: DocmostClient,
     changes: Iterable[PageChange],
     *,
+    space_slug: str = "<space>",
+    dir_path: Path | None = None,
     force: bool = False,
 ) -> RemotePreflight:
     """Compare manifest baselines with current raw ``/pages/info`` state.
 
-    All pages are checked before the caller starts mutating the server. Older
-    manifests remain readable, but a page without a revision baseline is
-    treated as a conflict rather than silently assuming the current server
-    value was present at the old pull.
+    All pages are checked before the caller starts mutating the server. This is
+    a best-effort preflight, not atomic compare-and-swap: current Docmost page
+    mutations do not accept a conditional revision token. Older manifests
+    remain readable, but a page without a revision baseline is treated as a
+    conflict rather than silently assuming the current server value was present
+    at the old pull.
     """
     from docmost_cli.output.formatter import print_error
 
@@ -164,7 +204,13 @@ def verify_remote_revisions(
             )
 
     if result.conflicts and not force:
-        print_error(_format_conflicts(result.conflicts))
+        print_error(
+            _format_conflicts(
+                result.conflicts,
+                space_slug=space_slug,
+                dir_path=dir_path,
+            )
+        )
 
     return result
 
@@ -184,7 +230,12 @@ def _updated_at(revision: Any) -> str | None:
     return str(updated_at) if updated_at else None
 
 
-def _format_conflicts(conflicts: list[RemoteConflict]) -> str:
+def _format_conflicts(
+    conflicts: list[RemoteConflict],
+    *,
+    space_slug: str,
+    dir_path: Path | None,
+) -> str:
     from rich.markup import escape
 
     lines = ["Remote changes detected; no changes were pushed:"]
@@ -198,10 +249,34 @@ def _format_conflicts(conflicts: list[RemoteConflict]) -> str:
             f"  - {escape(conflict.title)} ({conflict.page_id}; "
             f"{escape(conflict.filename)}): {detail}"
         )
-    lines.extend(
-        [
-            "Run 'docmost-cli sync pull <space> --force' to reconcile the remote changes.",
-            "To deliberately apply the local changes anyway, retry with 'sync push --force'.",
-        ]
+    lines.append(
+        format_reconciliation_guidance(
+            space_slug=space_slug,
+            dir_path=dir_path,
+            local_files_unchanged=True,
+        )
+    )
+    lines.append("To deliberately apply the local changes anyway, retry with 'sync push --force'.")
+    return "\n".join(lines)
+
+
+def format_reconciliation_guidance(
+    *,
+    space_slug: str,
+    dir_path: Path | None,
+    local_files_unchanged: bool,
+) -> str:
+    """Describe a non-destructive way to reconcile local and remote state."""
+    from rich.markup import escape
+
+    lines: list[str] = []
+    if local_files_unchanged and dir_path is not None:
+        lines.append(f"Local files in '{escape(str(dir_path))}' were not changed.")
+    lines.append("Do not force-pull over local edits before committing or backing them up.")
+    quoted_space = escape(shlex.quote(space_slug))
+    lines.append(
+        "Pull the remote space into a separate directory with "
+        f"'docmost-cli sync pull {quoted_space} --dir <new-directory>', "
+        "then merge your local edits there."
     )
     return "\n".join(lines)

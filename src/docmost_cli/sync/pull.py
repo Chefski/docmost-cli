@@ -74,7 +74,7 @@ def pull_space(
         PullResult with count and path.
     """
     from docmost_cli.api.attachments import download_attachment
-    from docmost_cli.api.pages import build_page_tree, get_page_content
+    from docmost_cli.api.pages import build_page_tree
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
     from docmost_cli.output.formatter import print_error
@@ -84,6 +84,7 @@ def pull_space(
         build_asset_entry,
         collect_attachment_ids,
     )
+    from docmost_cli.sync.conflicts import fetch_server_page
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         build_manifest,
@@ -133,9 +134,22 @@ def pull_space(
         title = page_info["title"]
         _err.print(f"Pulling {i}/{total}: {title}")
 
-        # Fetch content
-        content_data = get_page_content(client, page_id)
-        pm_content = content_data.get("content")
+        # Fetch the same canonical server state used by push preflight checks.
+        # Keeping both paths symmetric prevents endpoint-specific content
+        # representations from creating false conflicts.
+        server_page = fetch_server_page(
+            client,
+            page_id,
+            failure_suffix="The pull was not completed.",
+        )
+        if server_page is None:
+            print_error(
+                f"Page {page_id} disappeared while it was being pulled. The pull was not completed."
+            )
+        title = str(server_page.get("title") or title)
+        parent_id = server_page.get("parentPageId", page_info["parent_id"])
+        icon = str(server_page.get("icon") or "")
+        pm_content = server_page.get("content")
 
         attachment_ids = collect_attachment_ids(pm_content)
         attachment_paths: dict[str, str] = {}
@@ -167,8 +181,8 @@ def pull_space(
         metadata = {
             "id": page_id,
             "title": title,
-            "parent_id": page_info["parent_id"] or "",
-            "icon": page_info["icon"],
+            "parent_id": parent_id or "",
+            "icon": icon,
         }
         write_sync_file(dir_path / filename, metadata, markdown)
 
@@ -177,11 +191,11 @@ def pull_space(
         entry = build_page_entry(
             title=title,
             filename=filename,
-            parent_id=page_info["parent_id"],
-            icon=page_info["icon"],
+            parent_id=parent_id,
+            icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
-            server_revision=build_server_revision(content_data),
+            server_revision=build_server_revision(server_page),
         )
         page_entries.append({"id": page_id, **entry})
 

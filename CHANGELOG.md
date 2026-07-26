@@ -11,7 +11,9 @@
 - Prevent sync pushes from overwriting remote page edits by checking canonical
   `/pages/info` revision fingerprints before updates, moves, and deletions
 - Add `sync push --force` for explicit conflict overrides; older manifests
-  remain readable but require a fresh pull or `--force` before mutation
+  remain readable but require reconciliation or `--force` before mutation
+- Guide conflict recovery through a separate pull directory so local edits are
+  not overwritten, and document the current server API's non-atomic preflight boundary
 
 ## 0.4.0 (2026-03-22)
 

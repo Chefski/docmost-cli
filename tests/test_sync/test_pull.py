@@ -143,8 +143,10 @@ def _mock_page_content(
     page_id: str,
     title: str,
     pm_content: dict | None = None,
+    *,
+    parent_page_id: str | None = None,
 ) -> None:
-    """Add mocks for get_page_content (calls /pages/info then /pages/content)."""
+    """Add a mock for the canonical page-state fetch."""
     content = pm_content or _PM_DOC
     # get_page_info -> POST /pages/info
     httpx_mock.add_response(
@@ -153,16 +155,11 @@ def _mock_page_content(
             "id": page_id,
             "title": title,
             "icon": "",
-            "parentPageId": None,
+            "parentPageId": parent_page_id,
             "spaceId": "space-1",
             "content": content,
             "updatedAt": "2026-01-01T00:00:00.000Z",
         },
-    )
-    # post_raw -> POST /pages/content (Enterprise endpoint — return 404 to use fallback)
-    httpx_mock.add_response(
-        url=f"{_TEST_URL}/api/pages/content",
-        status_code=404,
     )
 
 
@@ -336,7 +333,12 @@ class TestPullWritesCorrectFrontmatter:
         # Mock content for root page
         _mock_page_content(httpx_mock, "root-1", "Root Page")
         # Mock content for child page
-        _mock_page_content(httpx_mock, "child-1", "Child Page")
+        _mock_page_content(
+            httpx_mock,
+            "child-1",
+            "Child Page",
+            parent_page_id="root-1",
+        )
 
         with _make_client() as client:
             result = pull_space(client, "test", target)

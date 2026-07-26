@@ -289,6 +289,10 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
   stale and legacy baselines abort with page-level details
 - `sync push --force` explicitly applies local changes despite conflicts;
   forced conflicting pages are not silently rebaselined
+- Conflict recovery preserves local edits: pull into a separate `--dir`, then
+  merge the local and remote copies instead of force-pulling over active files
+- Revision checks are a best-effort preflight, not atomic compare-and-swap,
+  because current Docmost mutations expose no conditional revision token
 - Each page is `{title}--{id_prefix}.md` with YAML frontmatter (`id`, `title`, `parent_id`, `icon`)
 - Referenced assets are stored as `files/{attachment_id}/{filename}` and tracked by hash/owner
 - Change detection via SHA-256 content hash (not timestamps)

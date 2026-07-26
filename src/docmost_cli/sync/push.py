@@ -63,7 +63,11 @@ def push_space(
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.output.formatter import print_error
     from docmost_cli.sync.assets import prepare_markdown_assets
-    from docmost_cli.sync.conflicts import fetch_server_page, verify_remote_revisions
+    from docmost_cli.sync.conflicts import (
+        fetch_server_page,
+        format_reconciliation_guidance,
+        verify_remote_revisions,
+    )
     from docmost_cli.sync.diff import compute_diff
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
@@ -100,7 +104,13 @@ def push_space(
     existing_changes = [*diff.modified, *diff.moved]
     if delete:
         existing_changes.extend(diff.deleted)
-    preflight = verify_remote_revisions(client, existing_changes, force=force)
+    preflight = verify_remote_revisions(
+        client,
+        existing_changes,
+        space_slug=space_slug,
+        dir_path=dir_path,
+        force=force,
+    )
 
     # A missing page cannot be overwritten. A missing page that was already
     # deleted locally is treated as an idempotent deletion when --force is set.
@@ -110,7 +120,12 @@ def push_space(
         missing = ", ".join(sorted(unforceable_missing))
         print_error(
             "Cannot force updates for pages that no longer exist on the server "
-            f"({missing}). Run 'sync pull --force' to reconcile. No changes were pushed."
+            f"({missing}). No changes were pushed.\n"
+            + format_reconciliation_guidance(
+                space_slug=space_slug,
+                dir_path=dir_path,
+                local_files_unchanged=True,
+            )
         )
 
     # --- Execute changes ---
@@ -296,14 +311,23 @@ def push_space(
             client,
             page_id,
             failure_suffix=(
-                "The page may have been updated, but the manifest was not saved. "
-                "Run 'sync pull --force' to reconcile."
+                "The page may have been updated, but the manifest was not saved.\n"
+                + format_reconciliation_guidance(
+                    space_slug=space_slug,
+                    dir_path=dir_path,
+                    local_files_unchanged=False,
+                )
             ),
         )
         if page is None:
             print_error(
                 f"Page {page_id} disappeared after it was updated. "
-                "The manifest was not saved; run 'sync pull --force' to reconcile."
+                "The manifest was not saved.\n"
+                + format_reconciliation_guidance(
+                    space_slug=space_slug,
+                    dir_path=dir_path,
+                    local_files_unchanged=False,
+                )
             )
         entry = manifest["pages"].get(page_id)
         if entry is not None:

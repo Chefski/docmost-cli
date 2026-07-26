@@ -129,15 +129,22 @@ Without this flag, push checks every page to be updated, moved, or deleted
 against its raw
 .B /pages/info
 revision before making any mutation and aborts the entire push on conflict.
-Forced conflicting pages keep their previous baseline; pull again before the
+Forced conflicting pages keep their previous baseline; reconcile before the
 next normal push.
 .PP
+The revision check is a best\-effort preflight, not atomic compare\-and\-swap.
+Current Docmost page mutation endpoints do not accept a conditional revision
+token, so a remote edit racing after the check can still be overwritten.
+.PP
 Manifests created before remote revision tracking remain readable, but their
-existing pages require a fresh
-.B sync pull \-\-force
-or an explicit
+existing pages require reconciliation or an explicit
 .B sync push \-\-force
 before mutation.
+.PP
+To reconcile safely, preserve local edits and pull the remote space into a
+separate directory with
+.BR "sync pull " space\-slug " \-\-dir " new\-directory .
+Merge the two copies instead of force\-pulling over active local files.
 .SS status
 Show changes between local files and the last\-pulled state.
 .PP

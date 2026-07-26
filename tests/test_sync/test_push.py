@@ -953,6 +953,14 @@ class TestPushUpdateAndMove:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                parent_id="old-parent",
+            ),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
@@ -960,6 +968,16 @@ class TestPushUpdateAndMove:
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/move",
             json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                parent_id="new-parent",
+                content={"type": "doc", "content": [{"type": "text", "text": new_body}]},
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
         )
 
         with _make_client() as client:
@@ -970,11 +988,13 @@ class TestPushUpdateAndMove:
         requests = httpx_mock.get_requests()
         assert [request.url.path for request in requests] == [
             "/api/spaces",
+            "/api/pages/info",
             "/api/pages/update",
             "/api/pages/move",
+            "/api/pages/info",
         ]
-        assert json.loads(requests[1].content)["content"] == new_body
-        assert json.loads(requests[2].content)["parentPageId"] == "new-parent"
+        assert json.loads(requests[2].content)["content"] == new_body
+        assert json.loads(requests[3].content)["parentPageId"] == "new-parent"
 
         manifest = load_manifest(target)
         assert manifest["pages"][FAKE_PAGE_ID]["content_hash"] == compute_content_hash(new_body)
@@ -1006,6 +1026,15 @@ class TestPushUpdateAndMove:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="Old Title",
+                parent_id="old-parent",
+                icon="old-icon",
+            ),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
@@ -1014,6 +1043,16 @@ class TestPushUpdateAndMove:
             url=f"{_TEST_URL}/api/pages/move",
             json={"data": {"id": FAKE_PAGE_ID}},
         )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="New Title",
+                parent_id="new-parent",
+                icon="new-icon",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
 
         with _make_client() as client:
             result = push_space(client, "eng", target)
@@ -1021,10 +1060,10 @@ class TestPushUpdateAndMove:
         assert result.updated == 1
         assert result.moved == 1
         requests = httpx_mock.get_requests()
-        update_payload = json.loads(requests[1].content)
+        update_payload = json.loads(requests[2].content)
         assert update_payload["title"] == "New Title"
         assert update_payload["icon"] == "new-icon"
-        assert json.loads(requests[2].content)["parentPageId"] == "new-parent"
+        assert json.loads(requests[3].content)["parentPageId"] == "new-parent"
 
         manifest = load_manifest(target)
         assert manifest["pages"][FAKE_PAGE_ID]["title"] == "New Title"
@@ -1056,6 +1095,14 @@ class TestPushUpdateAndMove:
         )
 
         _mock_resolve_space(httpx_mock)
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                parent_id="old-parent",
+            ),
+        )
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
@@ -1071,6 +1118,7 @@ class TestPushUpdateAndMove:
         requests = httpx_mock.get_requests()
         assert [request.url.path for request in requests] == [
             "/api/spaces",
+            "/api/pages/info",
             "/api/pages/update",
             "/api/pages/move",
         ]

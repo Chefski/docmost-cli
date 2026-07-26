@@ -120,7 +120,9 @@ class TestVerifyRemoteRevisions:
         error = capsys.readouterr().err
         assert _PAGE_ID in error
         assert "no changes were pushed" in error
-        assert "sync pull <space> --force" in error
+        assert "--dir <new-directory>" in error
+        assert "Do not force-pull over local edits" in error
+        assert "sync pull --force" not in error
         assert "sync push --force" in error
 
     def test_old_manifest_requires_pull_or_explicit_force(self, httpx_mock, capsys) -> None:
@@ -180,8 +182,34 @@ class TestVerifyRemoteRevisions:
         assert "[Draft] Page" in error
         assert "[Draft]--019a2a69.md" in error
 
-    def test_verification_failure_aborts_before_mutation(self, httpx_mock, capsys) -> None:
+    def test_transient_verification_failure_retries_then_succeeds(
+        self,
+        httpx_mock,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        page = _server_page()
         _mock_page(httpx_mock, {"message": "unavailable"}, status_code=503)
+        _mock_page(httpx_mock, page)
+
+        with _make_client() as client:
+            result = verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert result.conflicts == []
+        assert len(httpx_mock.get_requests()) == 2
+
+    def test_exhausted_verification_retries_abort_before_mutation(
+        self,
+        httpx_mock,
+        capsys,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        for _ in range(4):
+            _mock_page(httpx_mock, {"message": "unavailable"}, status_code=503)
 
         with _make_client() as client, pytest.raises(SystemExit):
             verify_remote_revisions(
@@ -190,3 +218,46 @@ class TestVerifyRemoteRevisions:
             )
 
         assert "Could not verify the remote revision" in capsys.readouterr().err
+
+    def test_legacy_content_endpoint_is_used_in_revision(self, httpx_mock) -> None:
+        page = _server_page()
+        page_without_content = {key: value for key, value in page.items() if key != "content"}
+        _mock_page(httpx_mock, page_without_content)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/content",
+            json={"data": {"content": page["content"]}},
+        )
+
+        with _make_client() as client:
+            result = verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert result.conflicts == []
+        assert result.pages[_PAGE_ID]["content"] == page["content"]
+
+    def test_session_reauthentication_still_validates_page_shape(
+        self,
+        httpx_mock,
+        session_settings,
+        monkeypatch,
+        tmp_path,
+        capsys,
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        url = f"{_TEST_URL}/api/pages/info"
+        httpx_mock.add_response(url=url, status_code=401)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/auth/login",
+            json={"token": "new_jwt"},
+        )
+        httpx_mock.add_response(url=url, json={"message": "not a page"})
+
+        with DocmostClient(session_settings) as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(_server_page()))],
+            )
+
+        assert "did not contain page state" in " ".join(capsys.readouterr().err.split())
