@@ -88,8 +88,8 @@ page content.
 Manifests created by older CLI versions remain usable.
 Run a fresh pull to add raw snapshots and enable the rich\-content guard for
 their existing pages.
-If server\-side Markdown conversion is unavailable, pull writes compatibility
-output for reading but protects that page from content replacement.
+If a successful server response contains no canonical Markdown, pull writes
+compatibility output for reading but protects that page from content replacement.
 .SH SUBCOMMANDS
 .SS pull
 Download all pages from a space to local Markdown files.

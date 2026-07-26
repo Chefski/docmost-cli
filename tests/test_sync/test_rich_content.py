@@ -204,6 +204,24 @@ def test_fetches_server_canonical_markdown(httpx_mock) -> None:
     assert json.loads(request.content) == {"pageId": "page-1", "format": "markdown"}
 
 
+def test_canonical_markdown_retries_transient_failures(httpx_mock, monkeypatch) -> None:
+    monkeypatch.setattr("docmost_cli.api.client.time.sleep", lambda _delay: None)
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        status_code=503,
+    )
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        json={"data": {"id": "page-1", "content": "# Recovered\n"}},
+    )
+
+    with _make_client() as client:
+        markdown = fetch_canonical_markdown(client, "page-1")
+
+    assert markdown == "# Recovered\n"
+    assert len(httpx_mock.get_requests()) == 2
+
+
 def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
     markdown = (
         "![Diagram](/api/files/image-id/diagram.png)\n"

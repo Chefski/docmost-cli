@@ -130,21 +130,14 @@ def analyze_prosemirror(content: object) -> tuple[str, ...]:
 def fetch_canonical_markdown(client: DocmostClient, page_id: str) -> str | None:
     """Ask Docmost to serialize a page with its canonical Markdown converter.
 
-    ``None`` indicates an older server or an invalid response. Callers may
-    fall back to the local converter for known-safe documents.
+    This read-only POST uses the client's session-refresh and replay-safe retry
+    path. ``None`` indicates a successful response without Markdown content.
     """
-    response = client.post_raw(
+    payload = client.post(
         "/pages/info",
         json={"pageId": page_id, "format": "markdown"},
-        raise_on_error=False,
+        retry_safe=True,
     )
-    if not response.is_success:
-        return None
-
-    try:
-        payload = response.json()
-    except ValueError:
-        return None
     data = payload.get("data", payload) if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         return None

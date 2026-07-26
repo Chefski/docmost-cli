@@ -134,9 +134,9 @@ features that Markdown cannot preserve. If a local content or attachment change 
 page containing protected features (for example mentions, comments, columns, transclusions,
 embeds, alignment, colors, or merged cells), `sync push` stops before making any server changes.
 Title, icon, and parent-only changes remain safe. Manifests from older CLI versions remain usable;
-run a fresh pull to enable the rich-content guard for those pages. If the server-side conversion
-is unavailable, pull still produces readable Markdown but protects that page from content pushes
-because the compatibility converter is not lossless.
+run a fresh pull to enable the rich-content guard for those pages. If a successful server response
+contains no canonical Markdown, pull still produces readable compatibility output but protects
+that page from content pushes because the compatibility converter is not lossless.
 
 ## Configuration
 

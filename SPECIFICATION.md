@@ -297,7 +297,8 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
 - Push preflights all replacements and aborts before mutation when protected features are present
 - Title, icon, and parent-only updates do not replace content and therefore remain allowed
 - Legacy manifests without guard metadata remain readable; a fresh pull enables protection
-- Local-converter fallback output is readable but always protected from content replacement
+- A successful response without canonical Markdown uses readable local fallback output that is
+  always protected from content replacement; transient canonical reads are retried safely
 
 ---
 

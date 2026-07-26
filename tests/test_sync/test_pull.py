@@ -178,7 +178,12 @@ def _mock_page_content(
     else:
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/info",
-            status_code=404,
+            json={
+                "id": page_id,
+                "title": title,
+                "spaceId": "space-1",
+                "content": None,
+            },
         )
 
 
