@@ -159,6 +159,7 @@ def build_manifest(
             icon=page.get("icon", ""),
             content_hash=page["content_hash"],
             attachment_ids=page.get("attachment_ids", []),
+            rich_content=page.get("rich_content"),
         )
     return {
         "version": MANIFEST_VERSION,
@@ -177,6 +178,7 @@ def build_page_entry(
     icon: str,
     content_hash: str,
     attachment_ids: list[str] | None = None,
+    rich_content: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a single page entry for inclusion in the manifest.
 
@@ -186,6 +188,8 @@ def build_page_entry(
         parent_id: Parent page ID, or ``None`` for root pages.
         icon: Page icon (emoji or empty string).
         content_hash: Content hash from :func:`compute_content_hash`.
+        attachment_ids: Stable attachment IDs referenced by the page.
+        rich_content: Optional ProseMirror loss-prevention metadata.
 
     Returns:
         A dict representing one page in the manifest ``pages`` map.
@@ -199,4 +203,6 @@ def build_page_entry(
     }
     if attachment_ids:
         entry["attachment_ids"] = attachment_ids
+    if rich_content is not None:
+        entry["rich_content"] = rich_content
     return entry

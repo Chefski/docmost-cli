@@ -494,6 +494,91 @@ class TestPushContentUpdate:
         manifest = load_manifest(target)
         assert manifest["pages"][FAKE_PAGE_ID]["content_hash"] == compute_content_hash(new_body)
 
+    def test_refuses_lossy_rich_content_replacement_before_update(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+        capsys,
+    ) -> None:
+        old_body = "Mention: Ada\n"
+        new_body = "Mention removed\n"
+        entry = build_page_entry(
+            title="Rich Page",
+            filename="rich.md",
+            parent_id=None,
+            icon="",
+            content_hash=compute_content_hash(old_body),
+            rich_content={
+                "guard_version": 1,
+                "source": "prosemirror",
+                "snapshot_path": ".docmost/raw-pages/page.json",
+                "unsafe_features": ["node:mention", "mark:comment"],
+            },
+        )
+        target = _setup_synced_dir(tmp_path, pages={FAKE_PAGE_ID: entry})
+        _write_page(
+            target,
+            "rich.md",
+            page_id=FAKE_PAGE_ID,
+            title="Rich Page",
+            body=new_body,
+        )
+        _mock_resolve_space(httpx_mock)
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            push_space(client, "eng", target)
+
+        requests = httpx_mock.get_requests()
+        assert [str(request.url) for request in requests] == [f"{_TEST_URL}/api/spaces"]
+        stderr = capsys.readouterr().err
+        assert "Rich-content safety check failed" in stderr
+        assert "node:mention" in stderr
+        assert ".docmost/raw-pages/page.json" in stderr
+
+    def test_successful_markdown_update_records_safe_source(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        old_body = "Old content.\n"
+        new_body = "Updated content.\n"
+        entry = build_page_entry(
+            title="My Page",
+            filename="my-page.md",
+            parent_id=None,
+            icon="",
+            content_hash=compute_content_hash(old_body),
+            rich_content={
+                "guard_version": 1,
+                "source": "prosemirror",
+                "snapshot_path": ".docmost/raw-pages/page.json",
+                "unsafe_features": [],
+            },
+        )
+        target = _setup_synced_dir(tmp_path, pages={FAKE_PAGE_ID: entry})
+        _write_page(
+            target,
+            "my-page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body=new_body,
+        )
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+
+        with _make_client() as client:
+            push_space(client, "eng", target)
+
+        manifest = load_manifest(target)
+        assert manifest["pages"][FAKE_PAGE_ID]["rich_content"] == {
+            "guard_version": 1,
+            "source": "markdown",
+            "unsafe_features": [],
+        }
+
 
 # ---------------------------------------------------------------------------
 # push_space — content update preserves IDs on Community too

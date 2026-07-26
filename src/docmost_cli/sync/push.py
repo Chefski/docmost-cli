@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from docmost_cli.api.client import DocmostClient
+    from docmost_cli.sync.rich_content import RichContentConflict
 
 __all__ = ["PushResult", "push_space"]
 
@@ -69,6 +70,10 @@ def push_space(
         load_manifest,
         save_manifest,
     )
+    from docmost_cli.sync.rich_content import (
+        find_rich_content_conflicts,
+        markdown_rich_content_state,
+    )
 
     space_id = resolve_space_id(client, space_slug)
 
@@ -86,6 +91,15 @@ def push_space(
 
     # Display summary
     _print_summary(diff)
+
+    rich_content_conflicts = find_rich_content_conflicts(diff)
+    if rich_content_conflicts:
+        _print_rich_content_conflicts(rich_content_conflicts)
+        print_error(
+            "Refusing to replace content that cannot round-trip safely through Markdown. "
+            "Edit those pages in Docmost, or revert their local content/attachment changes. "
+            "Title, icon, and parent-only changes remain safe."
+        )
 
     if dry_run:
         _print_dry_run(diff)
@@ -149,6 +163,7 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            rich_content=markdown_rich_content_state(),
         )
         existing_ids.add(new_id)
         result.created += 1
@@ -202,6 +217,10 @@ def push_space(
             manifest_parent_id = (change.manifest_entry or {}).get("parent_id") or None
 
         content_hash = compute_content_hash(body)
+        previous_rich_content = (change.manifest_entry or {}).get("rich_content")
+        rich_content = (
+            markdown_rich_content_state() if has_content_change else previous_rich_content
+        )
         manifest["pages"][page_id] = build_page_entry(
             title=title,
             filename=change.filename,
@@ -209,6 +228,7 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            rich_content=rich_content if isinstance(rich_content, dict) else None,
         )
         result.updated += 1
 
@@ -357,6 +377,16 @@ def _print_summary(diff: SyncDiff) -> None:
     _err.print("Push plan:")
     for line in lines:
         _err.print(line)
+
+
+def _print_rich_content_conflicts(conflicts: list[RichContentConflict]) -> None:
+    """Print page-level diagnostics for blocked lossy replacements."""
+    _err.print("[red]Rich-content safety check failed:[/red]")
+    for conflict in conflicts:
+        features = ", ".join(conflict.features)
+        _err.print(f"  {conflict.title} ({conflict.filename}): {features}")
+        if conflict.snapshot_path:
+            _err.print(f"    Raw source snapshot: {conflict.snapshot_path}")
 
 
 def _print_dry_run(diff: SyncDiff) -> None:

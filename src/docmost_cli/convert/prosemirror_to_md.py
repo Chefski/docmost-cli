@@ -1,7 +1,8 @@
 """ProseMirror JSON → Markdown converter.
 
-Handles all Docmost node types and marks, converting ProseMirror
-document trees into GitHub-Flavored Markdown.
+Handles the common Markdown-safe Docmost node and mark subset. Sync prefers
+Docmost's server-side converter and uses this implementation as a compatibility
+fallback.
 """
 
 import re

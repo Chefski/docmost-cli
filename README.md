@@ -128,6 +128,14 @@ their hashes and owning pages in `.docmost-manifest.json`. `sync push` uploads n
 replaces changed assets in place, while writing the stable attachment ID back into Docmost page
 content. Relative image/file links to existing local files are treated as page assets.
 
+Sync uses Docmost's server-side Markdown conversion as the canonical local representation. Every
+pull also stores the exact source ProseMirror JSON under `.docmost/raw-pages/` and records editor
+features that Markdown cannot preserve. If a local content or attachment change would replace a
+page containing protected features (for example mentions, comments, columns, transclusions,
+embeds, alignment, colors, or merged cells), `sync push` stops before making any server changes.
+Title, icon, and parent-only changes remain safe. Manifests from older CLI versions remain usable;
+run a fresh pull to enable the rich-content guard for those pages.
+
 ## Configuration
 
 ### Config file location

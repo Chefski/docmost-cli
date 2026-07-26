@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
+from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
 from docmost_cli.sync.manifest import MANIFEST_FILENAME, MANIFEST_VERSION
 from docmost_cli.sync.pull import PullResult, flatten_tree, pull_space
 
@@ -139,8 +140,9 @@ def _mock_page_content(
     page_id: str,
     title: str,
     pm_content: dict | None = None,
+    markdown_content: str | None = None,
 ) -> None:
-    """Add mocks for get_page_content (calls /pages/info then /pages/content)."""
+    """Add raw-content and canonical-Markdown page responses."""
     content = pm_content or _PM_DOC
     # get_page_info -> POST /pages/info
     httpx_mock.add_response(
@@ -156,6 +158,18 @@ def _mock_page_content(
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/content",
         status_code=404,
+    )
+    # Rich-content-safe pull asks the server to perform canonical conversion.
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        json={
+            "id": page_id,
+            "title": title,
+            "spaceId": "space-1",
+            "content": (
+                markdown_content if markdown_content is not None else convert_to_markdown(content)
+            ),
+        },
     )
 
 
@@ -221,6 +235,58 @@ class TestPullCreatesFiles:
         assert len(manifest["pages"]) == 2
         assert "p1" in manifest["pages"]
         assert "p2" in manifest["pages"]
+
+    def test_uses_server_markdown_and_records_raw_source_guard(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        rich_doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "mention",
+                            "attrs": {"id": "user-1", "label": "Ada"},
+                        }
+                    ],
+                }
+            ],
+        }
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Rich Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        _mock_page_content(
+            httpx_mock,
+            "p1",
+            "Rich Page",
+            rich_doc,
+            markdown_content="Server canonical output\n",
+        )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        page_text = next(target.glob("*.md")).read_text(encoding="utf-8")
+        assert page_text.endswith("Server canonical output\n")
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        guard = manifest["pages"]["p1"]["rich_content"]
+        assert guard["unsafe_features"] == ["node:mention"]
+        snapshot = target / guard["snapshot_path"]
+        assert json.loads(snapshot.read_text(encoding="utf-8")) == rich_doc
 
 
 class TestPullAttachments:
