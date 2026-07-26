@@ -672,6 +672,8 @@ class TestPushAttachmentUpdate:
         )
         asset = target / relative_path
         asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"old-image-bytes")
+        pulled_asset_hash = compute_file_hash(asset)
         asset.write_bytes(b"new-image-bytes")
         manifest = load_manifest(target)
         manifest["assets"] = {
@@ -681,7 +683,8 @@ class TestPushAttachmentUpdate:
                 "mime_type": "image/png",
                 "size": 3,
                 "page_id": FAKE_PAGE_ID,
-                "content_hash": "sha256:old",
+                "content_hash": pulled_asset_hash,
+                "server_updated_at": "2026-01-01T00:00:00.000Z",
                 "server_path": f"/api/files/{attachment_id}/diagram.png",
             }
         }
@@ -693,6 +696,21 @@ class TestPushAttachmentUpdate:
             _server_page(FAKE_PAGE_ID, title="My Page"),
         )
         httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/info",
+            json={
+                "id": attachment_id,
+                "fileName": "diagram.png",
+                "mimeType": "image/png",
+                "fileSize": 3,
+                "pageId": FAKE_PAGE_ID,
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/{attachment_id}/diagram.png",
+            content=b"old-image-bytes",
+        )
+        httpx_mock.add_response(
             url=f"{_TEST_URL}/api/files/upload",
             json={
                 "id": attachment_id,
@@ -700,6 +718,7 @@ class TestPushAttachmentUpdate:
                 "mimeType": "image/png",
                 "fileSize": asset.stat().st_size,
                 "pageId": FAKE_PAGE_ID,
+                "updatedAt": "2026-01-02T00:00:00.000Z",
             },
         )
         httpx_mock.add_response(
@@ -739,6 +758,10 @@ class TestPushAttachmentUpdate:
         assert f'data-attachment-id="{attachment_id}"' in update_payload["content"]
         updated_manifest = load_manifest(target)
         assert updated_manifest["assets"][attachment_id]["content_hash"] == compute_file_hash(asset)
+        assert (
+            updated_manifest["assets"][attachment_id]["server_updated_at"]
+            == "2026-01-02T00:00:00.000Z"
+        )
 
 
 # ---------------------------------------------------------------------------

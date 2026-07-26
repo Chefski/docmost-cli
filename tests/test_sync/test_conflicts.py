@@ -6,8 +6,9 @@ import pytest
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
+from docmost_cli.sync.assets import compute_bytes_hash
 from docmost_cli.sync.conflicts import verify_remote_revisions
-from docmost_cli.sync.diff import PageChange
+from docmost_cli.sync.diff import ChangeType, PageChange
 from docmost_cli.sync.manifest import build_server_revision
 
 _TEST_URL = "https://docs.example.com"
@@ -236,6 +237,81 @@ class TestVerifyRemoteRevisions:
 
         assert result.conflicts == []
         assert result.pages[_PAGE_ID]["content"] == page["content"]
+
+    def test_missing_content_endpoint_aborts_instead_of_fingerprinting_blank_page(
+        self,
+        httpx_mock,
+        capsys,
+    ) -> None:
+        page = _server_page()
+        page_without_content = {key: value for key, value in page.items() if key != "content"}
+        _mock_page(httpx_mock, page_without_content)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/content",
+            status_code=404,
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert "page content is unavailable" in " ".join(capsys.readouterr().err.split())
+
+    def test_changed_local_attachment_conflicts_when_remote_bytes_were_replaced(
+        self,
+        httpx_mock,
+        tmp_path,
+        capsys,
+    ) -> None:
+        attachment_id = "019c0000-1111-7222-8333-444444444444"
+        relative_path = f"files/{attachment_id}/diagram.png"
+        local_file = tmp_path / relative_path
+        local_file.parent.mkdir(parents=True)
+        local_file.write_bytes(b"changed locally")
+        page = _server_page()
+        change = _change(build_server_revision(page))
+        change.changes.add(ChangeType.ATTACHMENT_CHANGED)
+        assert change.manifest_entry is not None
+        change.manifest_entry["attachment_ids"] = [attachment_id]
+        manifest = {
+            "assets": {
+                attachment_id: {
+                    "file_name": "diagram.png",
+                    "path": relative_path,
+                    "page_id": _PAGE_ID,
+                    "content_hash": compute_bytes_hash(b"pulled remote bytes"),
+                    "server_updated_at": "2026-01-01T00:00:00.000Z",
+                }
+            }
+        }
+        _mock_page(httpx_mock, page)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/info",
+            json={
+                "id": attachment_id,
+                "fileName": "diagram.png",
+                "pageId": _PAGE_ID,
+                "updatedAt": "2026-01-02T00:00:00.000Z",
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/{attachment_id}/diagram.png",
+            content=b"changed remote bytes",
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [change],
+                manifest=manifest,
+                dir_path=tmp_path,
+            )
+
+        error = " ".join(capsys.readouterr().err.split())
+        assert attachment_id in error
+        assert "attachment bytes changed since the last pull" in error
 
     def test_session_reauthentication_still_validates_page_shape(
         self,

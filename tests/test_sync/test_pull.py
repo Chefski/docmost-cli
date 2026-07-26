@@ -282,6 +282,7 @@ class TestPullAttachments:
                 "mimeType": "image/png",
                 "fileSize": 11,
                 "pageId": "p1",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
             },
         )
         httpx_mock.add_response(
@@ -300,6 +301,7 @@ class TestPullAttachments:
         manifest = json.loads((target / MANIFEST_FILENAME).read_text())
         assert manifest["pages"]["p1"]["attachment_ids"] == [attachment_id]
         assert manifest["assets"][attachment_id]["path"] == (f"files/{attachment_id}/diagram.png")
+        assert manifest["assets"][attachment_id]["server_updated_at"] == "2026-01-01T00:00:00.000Z"
 
 
 class TestPullWritesCorrectFrontmatter:

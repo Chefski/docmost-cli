@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 __all__ = [
     "RemoteConflict",
     "RemotePreflight",
+    "fetch_server_attachment",
     "fetch_server_page",
     "format_reconciliation_guidance",
     "verify_remote_revisions",
@@ -45,6 +46,7 @@ class RemotePreflight:
     pages: dict[str, dict[str, Any]] = field(default_factory=dict)
     conflicts: list[RemoteConflict] = field(default_factory=list)
     missing_page_ids: set[str] = field(default_factory=set)
+    missing_attachment_ids: set[str] = field(default_factory=set)
 
     @property
     def conflict_page_ids(self) -> set[str]:
@@ -105,30 +107,70 @@ def fetch_server_page(
             retry_safe=True,
             allowed_statuses=_REVISION_ALLOWED_STATUSES,
         )
-        if content_response.status_code != 404:
-            if not content_response.is_success:
-                print_error(
-                    f"Could not verify the remote revision for page {page_id} "
-                    f"(HTTP {content_response.status_code}). {failure_suffix}"
-                )
-            try:
-                content_result = content_response.json()
-            except ValueError:
-                print_error(
-                    f"Could not verify the remote revision for page {page_id}: "
-                    f"the server returned invalid content JSON. {failure_suffix}"
-                )
-            content_data = (
-                content_result.get("data", content_result)
-                if isinstance(content_result, dict)
-                else {}
+        if content_response.status_code == 404:
+            print_error(
+                f"Could not verify the remote revision for page {page_id}: "
+                f"page content is unavailable from this Docmost instance. {failure_suffix}"
             )
-            if not isinstance(content_data, dict) or "content" not in content_data:
-                print_error(
-                    f"Could not verify the remote revision for page {page_id}: "
-                    f"the server response did not contain page content. {failure_suffix}"
-                )
-            data = {**data, "content": content_data["content"]}
+        if not content_response.is_success:
+            print_error(
+                f"Could not verify the remote revision for page {page_id} "
+                f"(HTTP {content_response.status_code}). {failure_suffix}"
+            )
+        try:
+            content_result = content_response.json()
+        except ValueError:
+            print_error(
+                f"Could not verify the remote revision for page {page_id}: "
+                f"the server returned invalid content JSON. {failure_suffix}"
+            )
+        content_data = (
+            content_result.get("data", content_result) if isinstance(content_result, dict) else {}
+        )
+        if not isinstance(content_data, dict) or "content" not in content_data:
+            print_error(
+                f"Could not verify the remote revision for page {page_id}: "
+                f"the server response did not contain page content. {failure_suffix}"
+            )
+        data = {**data, "content": content_data["content"]}
+    return data
+
+
+def fetch_server_attachment(
+    client: DocmostClient,
+    attachment_id: str,
+    *,
+    failure_suffix: str = "No changes were pushed.",
+) -> dict[str, Any] | None:
+    """Fetch attachment metadata while preserving retry, 404, and validation semantics."""
+    from docmost_cli.output.formatter import print_error
+
+    response = client.post_raw(
+        "/files/info",
+        json={"attachmentId": attachment_id},
+        retry_safe=True,
+        allowed_statuses=_REVISION_ALLOWED_STATUSES,
+    )
+    if response.status_code == 404:
+        return None
+    if not response.is_success:
+        print_error(
+            f"Could not verify the remote revision for attachment {attachment_id} "
+            f"(HTTP {response.status_code}). {failure_suffix}"
+        )
+    try:
+        result = response.json()
+    except ValueError:
+        print_error(
+            f"Could not verify the remote revision for attachment {attachment_id}: "
+            f"the server returned invalid JSON. {failure_suffix}"
+        )
+    data = result.get("data", result) if isinstance(result, dict) else {}
+    if not isinstance(data, dict) or data.get("id") != attachment_id:
+        print_error(
+            f"Could not verify the remote revision for attachment {attachment_id}: "
+            f"the server response did not contain matching attachment state. {failure_suffix}"
+        )
     return data
 
 
@@ -138,6 +180,7 @@ def verify_remote_revisions(
     *,
     space_slug: str = "<space>",
     dir_path: Path | None = None,
+    manifest: dict[str, Any] | None = None,
     force: bool = False,
 ) -> RemotePreflight:
     """Compare manifest baselines with current raw ``/pages/info`` state.
@@ -151,10 +194,11 @@ def verify_remote_revisions(
     """
     from docmost_cli.output.formatter import print_error
 
+    change_list = list(changes)
     result = RemotePreflight()
     seen_ids: set[str] = set()
 
-    for change in changes:
+    for change in change_list:
         if not change.page_id or change.page_id in seen_ids:
             continue
         seen_ids.add(change.page_id)
@@ -203,6 +247,15 @@ def verify_remote_revisions(
                 )
             )
 
+    if manifest is not None and dir_path is not None:
+        _verify_changed_attachment_revisions(
+            client,
+            change_list,
+            manifest=manifest,
+            dir_path=dir_path,
+            result=result,
+        )
+
     if result.conflicts and not force:
         print_error(
             _format_conflicts(
@@ -213,6 +266,93 @@ def verify_remote_revisions(
         )
 
     return result
+
+
+def _verify_changed_attachment_revisions(
+    client: DocmostClient,
+    changes: Iterable[PageChange],
+    *,
+    manifest: dict[str, Any],
+    dir_path: Path,
+    result: RemotePreflight,
+) -> None:
+    """Check remote revisions for locally changed in-place attachment replacements."""
+    from docmost_cli.api.attachments import download_attachment
+    from docmost_cli.sync.assets import compute_bytes_hash, compute_file_hash
+    from docmost_cli.sync.diff import ChangeType
+
+    manifest_assets = manifest.get("assets", {})
+    if not isinstance(manifest_assets, dict):
+        return
+
+    seen_ids: set[str] = set()
+    for change in changes:
+        if ChangeType.ATTACHMENT_CHANGED not in change.changes:
+            continue
+        entry = change.manifest_entry or {}
+        for raw_attachment_id in entry.get("attachment_ids", []):
+            attachment_id = str(raw_attachment_id)
+            if not attachment_id or attachment_id in seen_ids:
+                continue
+            seen_ids.add(attachment_id)
+            asset = manifest_assets.get(attachment_id)
+            if not isinstance(asset, dict) or not asset.get("path"):
+                continue
+            root = dir_path.resolve()
+            local_path = (root / str(asset["path"])).resolve()
+            try:
+                local_path.relative_to(root)
+            except ValueError:
+                continue
+            if not local_path.is_file():
+                continue
+            if compute_file_hash(local_path) == asset.get("content_hash"):
+                continue
+
+            current = fetch_server_attachment(client, attachment_id)
+            title = str(entry.get("title") or change.page_id)
+            file_name = str(asset.get("file_name") or asset["path"])
+            if current is None:
+                result.missing_attachment_ids.add(attachment_id)
+                result.conflicts.append(
+                    RemoteConflict(
+                        page_id=attachment_id,
+                        title=f"{title} attachment {file_name}",
+                        filename=str(asset["path"]),
+                        reason="attachment no longer exists on the server",
+                        expected_updated_at=_asset_updated_at(asset),
+                    )
+                )
+                continue
+
+            expected_updated_at = _asset_updated_at(asset)
+            current_updated_at = _asset_updated_at(current)
+            expected_hash = asset.get("content_hash")
+            if not isinstance(expected_hash, str) or not expected_hash.startswith("sha256:"):
+                result.conflicts.append(
+                    RemoteConflict(
+                        page_id=attachment_id,
+                        title=f"{title} attachment {file_name}",
+                        filename=str(asset["path"]),
+                        reason="manifest has no compatible attachment fingerprint",
+                        current_updated_at=current_updated_at,
+                    )
+                )
+                continue
+
+            _, remote_bytes = download_attachment(client, current)
+            current_hash = compute_bytes_hash(remote_bytes)
+            if current_hash != expected_hash:
+                result.conflicts.append(
+                    RemoteConflict(
+                        page_id=attachment_id,
+                        title=f"{title} attachment {file_name}",
+                        filename=str(asset["path"]),
+                        reason="attachment bytes changed since the last pull",
+                        expected_updated_at=expected_updated_at,
+                        current_updated_at=current_updated_at,
+                    )
+                )
 
 
 def _is_supported_revision(value: Any) -> bool:
@@ -227,6 +367,13 @@ def _updated_at(revision: Any) -> str | None:
     if not isinstance(revision, dict):
         return None
     updated_at = revision.get("updated_at")
+    return str(updated_at) if updated_at else None
+
+
+def _asset_updated_at(value: Any) -> str | None:
+    if not isinstance(value, dict):
+        return None
+    updated_at = value.get("server_updated_at") or value.get("updatedAt")
     return str(updated_at) if updated_at else None
 
 

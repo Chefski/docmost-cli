@@ -129,6 +129,8 @@ Without this flag, push checks every page to be updated, moved, or deleted
 against its raw
 .B /pages/info
 revision before making any mutation and aborts the entire push on conflict.
+Locally changed tracked attachments also compare the current remote bytes with
+their stored pulled fingerprint before replacing attachment bytes in place.
 Forced conflicting pages keep their previous baseline; reconcile before the
 next normal push.
 .PP

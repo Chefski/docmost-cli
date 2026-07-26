@@ -137,6 +137,10 @@ baseline; forced conflicting pages keep their previous baseline so a later norma
 requires reconciliation. Manifests created before this protection remain readable, but mutating
 their pages requires reconciliation or explicit `--force`.
 
+Tracked attachments retain their pulled byte fingerprint and server update revision. Before
+replacing locally changed attachment bytes in place, push downloads and verifies the current
+remote bytes against that fingerprint.
+
 This safeguard is a preflight check, not atomic compare-and-swap. Current Docmost page mutation
 endpoints do not accept a conditional revision token, so an edit racing after the check can still
 be overwritten.

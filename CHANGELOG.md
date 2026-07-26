@@ -10,6 +10,8 @@
 - Use Docmost's shared `/pages/update` content contract so page IDs and attachment ownership remain stable on Community and Enterprise editions
 - Prevent sync pushes from overwriting remote page edits by checking canonical
   `/pages/info` revision fingerprints before updates, moves, and deletions
+- Check tracked attachment remote-byte fingerprints before replacing locally
+  changed attachment bytes in place
 - Add `sync push --force` for explicit conflict overrides; older manifests
   remain readable but require reconciliation or `--force` before mutation
 - Guide conflict recovery through a separate pull directory so local edits are

@@ -109,6 +109,7 @@ def push_space(
         existing_changes,
         space_slug=space_slug,
         dir_path=dir_path,
+        manifest=manifest,
         force=force,
     )
 
@@ -120,6 +121,18 @@ def push_space(
         missing = ", ".join(sorted(unforceable_missing))
         print_error(
             "Cannot force updates for pages that no longer exist on the server "
+            f"({missing}). No changes were pushed.\n"
+            + format_reconciliation_guidance(
+                space_slug=space_slug,
+                dir_path=dir_path,
+                local_files_unchanged=True,
+            )
+        )
+
+    if preflight.missing_attachment_ids:
+        missing = ", ".join(sorted(preflight.missing_attachment_ids))
+        print_error(
+            "Cannot replace attachments that no longer exist on the server "
             f"({missing}). No changes were pushed.\n"
             + format_reconciliation_guidance(
                 space_slug=space_slug,

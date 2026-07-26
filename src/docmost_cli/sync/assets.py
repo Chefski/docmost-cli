@@ -21,6 +21,7 @@ __all__ = [
     "asset_relative_path",
     "build_asset_entry",
     "collect_attachment_ids",
+    "compute_bytes_hash",
     "compute_file_hash",
     "discover_local_assets",
     "prepare_markdown_assets",
@@ -73,6 +74,11 @@ def compute_file_hash(path: Path) -> str:
     return f"sha256:{digest.hexdigest()}"
 
 
+def compute_bytes_hash(content: bytes) -> str:
+    """Compute the same SHA-256 manifest hash for in-memory attachment bytes."""
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
 def collect_attachment_ids(document: Any) -> list[str]:
     """Collect stable attachment IDs from a ProseMirror document."""
     found: list[str] = []
@@ -114,6 +120,7 @@ def build_asset_entry(info: dict[str, Any], relative_path: str, file_path: Path)
         "size": int(info.get("fileSize") or file_path.stat().st_size),
         "page_id": str(info.get("pageId") or ""),
         "content_hash": compute_file_hash(file_path),
+        "server_updated_at": info.get("updatedAt"),
         "server_path": str(
             info.get("path") or attachment_path(str(info["id"]), str(info["fileName"]))
         ),

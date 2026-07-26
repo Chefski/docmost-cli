@@ -287,6 +287,8 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
   content and metadata for every pulled page
 - Push checks all remote revisions before any update, move, or deletion;
   stale and legacy baselines abort with page-level details
+- Locally changed tracked attachments compare the current remote bytes with
+  their stored pulled fingerprint before any in-place byte replacement
 - `sync push --force` explicitly applies local changes despite conflicts;
   forced conflicting pages are not silently rebaselined
 - Conflict recovery preserves local edits: pull into a separate `--dir`, then
