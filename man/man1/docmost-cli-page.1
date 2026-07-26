@@ -50,6 +50,7 @@ docmost\-cli\-page \- page operations for Docmost wiki
 .I page\-id
 .RB [ \-\-parent
 .IR id ]
+.RB [ \-\-root ]
 .RB [ \-\-space
 .IR slug ]
 .RB [ \-\-position
@@ -219,12 +220,15 @@ At least one of the options below must be provided.
 .TP
 .BI \-\-parent " id"
 New parent page UUID.
-Omit to move the page to the root level.
+.TP
+.B \-\-root
+Move the page to the root level of its current space.
 .TP
 .BI \-\-space " slug"
 Move the page to a different space.
 Cannot be combined with
-.B \-\-parent
+.BR \-\-parent ,
+.BR \-\-root ,
 or
 .BR \-\-position .
 .TP

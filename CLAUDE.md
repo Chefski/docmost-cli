@@ -73,7 +73,8 @@ config/  → standalone                      (no dependencies except pydantic)
 - **Pagination**: Cursor-based. Auto-follow until exhausted unless `--limit` is set
 - **Error handling**: Catch `httpx` exceptions → translate to user-friendly messages via `rich`
 - **Confirmations**: Destructive operations prompt unless `--yes` / `-y` is passed
-- **Page creation**: Send Markdown to `/pages/create` with `format: "markdown"`
+- **Page creation**: Send Markdown to `/pages/create` with `format: "markdown"` for
+  server-side conversion; reserve `/pages/import` for the `page import` command
 
 ### Output Strategy (no global `--json` flag)
 

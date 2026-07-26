@@ -2,8 +2,11 @@
 
 from typing import Any
 
+from pydantic import ValidationError
+
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pagination import build_body
+from docmost_cli.models.pages import CreatePageRequest, CreatePageResponse
 from docmost_cli.output.formatter import print_error, print_result
 
 __all__ = [
@@ -96,17 +99,23 @@ def create_page(
     Returns:
         Raw API response dict (should contain page ID).
     """
-    body = build_body(
-        {
-            "spaceId": space_id,
-            "title": title,
-            "content": content,
-            "format": "markdown",
-        },
-        parentPageId=parent_page_id,
+    request = CreatePageRequest(
+        space_id=space_id,
+        title=title,
+        content=content,
+        parent_page_id=parent_page_id,
         icon=icon,
     )
-    return client.post("/pages/create", json=body)
+    raw_response = client.post(
+        "/pages/create",
+        json=request.model_dump(by_alias=True, exclude_none=True),
+    )
+    response_data = raw_response.get("data", raw_response)
+    try:
+        response = CreatePageResponse.model_validate(response_data)
+    except ValidationError:
+        print_error("Page creation response did not include a valid page ID.")
+    return response.model_dump()
 
 
 def create_page_via_import(

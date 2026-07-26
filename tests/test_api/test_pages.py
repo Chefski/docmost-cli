@@ -86,6 +86,34 @@ class TestCreatePage:
             )
         assert result["id"] == "empty-page"
 
+    def test_accepts_nested_response(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/create",
+            json={"data": {"id": "nested-page"}},
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = create_page(
+                client,
+                space_id="space-1",
+                title="Nested Response",
+                content="",
+            )
+        assert result == {"id": "nested-page"}
+
+    def test_missing_response_id_exits(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/create",
+            json={"title": "Missing ID"},
+        )
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit) as exc:
+            create_page(
+                client,
+                space_id="space-1",
+                title="Missing ID",
+                content="",
+            )
+        assert exc.value.code == 1
+
     def test_with_parent_and_icon(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/create",

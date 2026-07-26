@@ -1,5 +1,6 @@
 """Tests for page CLI commands."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -221,6 +222,52 @@ class TestPageMove:
     def test_move_no_flags(self, tmp_config) -> None:
         result = runner.invoke(app, ["--config", str(tmp_config), "page", "move", "page-1"])
         assert result.exit_code != 0
+
+    def test_position_only_preserves_current_parent(self, tmp_config, httpx_mock) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/info",
+            json={"id": "page-1", "parentPageId": "parent-1"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            json={"id": "page-1"},
+        )
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "move",
+                "page-1",
+                "--position",
+                "bbbbb",
+            ],
+        )
+        assert result.exit_code == 0
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 2
+        assert json.loads(requests[1].content) == {
+            "pageId": "page-1",
+            "parentPageId": "parent-1",
+            "position": "bbbbb",
+        }
+
+    def test_root_move_sends_null_parent(self, tmp_config, httpx_mock) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            json={"id": "page-1"},
+        )
+        result = runner.invoke(
+            app,
+            ["--config", str(tmp_config), "page", "move", "page-1", "--root"],
+        )
+        assert result.exit_code == 0
+        assert json.loads(httpx_mock.get_requests()[0].content) == {
+            "pageId": "page-1",
+            "parentPageId": None,
+            "position": "aaaaa",
+        }
 
     def test_move_to_space_rejects_parent(self, tmp_config) -> None:
         result = runner.invoke(

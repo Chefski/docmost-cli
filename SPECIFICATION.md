@@ -169,7 +169,8 @@ docmost-cli page delete <page-id>                 # Delete a page (requires conf
   # stdout: deleted page ID | stderr: confirmation message
 
 docmost-cli page move <page-id>                   # Move a page
-  --parent <page-id>                          # New parent (omit for root)
+  --parent <page-id>                          # New parent
+  --root                                      # Move to the space root
   --space <space-slug>                        # Move to different space (cannot combine)
   --position <fractional-index>               # Position among siblings (5-12 chars)
 

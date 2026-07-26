@@ -172,8 +172,9 @@ def page_move_cmd(
     parent: str | None = typer.Option(
         None,
         "--parent",
-        help="New parent page ID (omit for root)",
+        help="New parent page ID",
     ),
+    root: bool = typer.Option(False, "--root", help="Move to the space root"),
     space: str | None = typer.Option(None, "--space", help="Target space slug"),
     position: str | None = typer.Option(None, "--position", help="Position among siblings"),
 ) -> None:
@@ -181,20 +182,28 @@ def page_move_cmd(
 
     See also: page children (find targets), page list --tree (view hierarchy).
     """
-    if parent is None and space is None and position is None:
-        print_error("At least one of --parent, --space, or --position is required.")
-    if space is not None and (parent is not None or position is not None):
-        print_error("--space cannot be combined with --parent or --position.")
+    if parent is None and not root and space is None and position is None:
+        print_error("At least one of --parent, --root, --space, or --position is required.")
+    if root and parent is not None:
+        print_error("--root cannot be combined with --parent.")
+    if space is not None and (parent is not None or root or position is not None):
+        print_error("--space cannot be combined with --parent, --root, or --position.")
 
     client = get_client()
     target_space_id = None
     if space is not None:
         target_space_id = resolve_space_id(client, space)
 
+    target_parent = parent
+    if not root and space is None and parent is None and position is not None:
+        current_page = get_page_info(client, page_id)
+        current_parent = current_page.get("parentPageId")
+        target_parent = str(current_parent) if current_parent else None
+
     move_page(
         client,
         page_id=page_id,
-        parent_page_id=parent,
+        parent_page_id=target_parent,
         space_id=target_space_id,
         position=position,
     )
