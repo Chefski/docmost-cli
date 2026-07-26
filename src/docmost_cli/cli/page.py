@@ -182,6 +182,8 @@ def page_move_cmd(
     """
     if parent is None and space is None and position is None:
         print_error("At least one of --parent, --space, or --position is required.")
+    if space is not None and (parent is not None or position is not None):
+        print_error("--space cannot be combined with --parent or --position.")
 
     client = get_client()
     target_space_id = None

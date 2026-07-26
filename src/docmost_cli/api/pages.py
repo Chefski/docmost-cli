@@ -259,19 +259,20 @@ def move_page(
         client: Authenticated Docmost client.
         page_id: Page UUID.
         parent_page_id: New parent page UUID, or None for the space root.
-        space_id: Target space UUID (for cross-space moves).
+        space_id: Target space UUID (cannot be combined with parent or position).
         position: Position among siblings (fractional index string, 5-12 chars).
 
     Returns:
         Raw API response dict.
     """
     if space_id is not None:
+        if parent_page_id is not None or position is not None:
+            print_error("Cross-space moves cannot also set a parent or position.")
         client.post_raw(
             "/pages/move-to-space",
             json={"pageId": page_id, "spaceId": space_id},
         )
-        if parent_page_id is None and position is None:
-            return {}
+        return {}
 
     body = {
         "pageId": page_id,
@@ -293,7 +294,10 @@ def get_page_content(client: DocmostClient, page_id: str) -> dict[str, Any]:
     Returns:
         Dict with page metadata and content (ProseMirror JSON).
     """
-    return get_page_info(client, page_id)
+    info = get_page_info(client, page_id)
+    if "content" not in info:
+        print_error("Page content is missing from the /pages/info response.")
+    return info
 
 
 def list_recent_pages(

@@ -220,16 +220,14 @@ class DocmostClient:
         """
         url = self.api_url(path)
         request = self._http.build_request("POST", url, json=json)
+        if raise_on_error:
+            return self._send_with_retry(request)
+
         self._auth.apply(request)
         try:
-            response = self._http.send(request)
+            return self._http.send(request)
         except httpx.HTTPError:
-            if raise_on_error:
-                print_error("Request failed.", exit_code=1)
             return httpx.Response(status_code=0)  # Sentinel for failed probe
-        if raise_on_error:
-            self._handle_error(response)
-        return response
 
     def get_raw(self, path: str, *, raise_on_error: bool = True) -> httpx.Response:
         """GET a binary/non-JSON resource with authentication.

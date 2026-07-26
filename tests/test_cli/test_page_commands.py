@@ -222,6 +222,23 @@ class TestPageMove:
         result = runner.invoke(app, ["--config", str(tmp_config), "page", "move", "page-1"])
         assert result.exit_code != 0
 
+    def test_move_to_space_rejects_parent(self, tmp_config) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "move",
+                "page-1",
+                "--space",
+                "staging",
+                "--parent",
+                "parent-2",
+            ],
+        )
+        assert result.exit_code != 0
+
 
 class TestPageList:
     def test_list_json(self, tmp_config, httpx_mock) -> None:

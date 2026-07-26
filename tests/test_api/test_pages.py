@@ -212,28 +212,15 @@ class TestMovePage:
             "position": "bbbbb",
         }
 
-    def test_move_to_space_then_parent(self, httpx_mock, api_key_settings) -> None:
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/move-to-space",
-        )
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/move",
-            json={"id": "page-1"},
-        )
-        with DocmostClient(api_key_settings) as client:
-            result = move_page(
+    def test_move_to_space_rejects_parent(self, httpx_mock, api_key_settings) -> None:
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            move_page(
                 client,
                 page_id="page-1",
                 space_id="space-2",
                 parent_page_id="parent-2",
             )
-        assert result["id"] == "page-1"
-        requests = httpx_mock.get_requests()
-        assert json.loads(requests[1].content) == {
-            "pageId": "page-1",
-            "parentPageId": "parent-2",
-            "position": "aaaaa",
-        }
+        assert httpx_mock.get_requests() == []
 
 
 class TestGetPageContent:
@@ -252,6 +239,24 @@ class TestGetPageContent:
         assert result["id"] == "page-1"
         assert "content" in result
         assert len(httpx_mock.get_requests()) == 1
+
+    def test_missing_content_exits(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/info",
+            json={"id": "page-1", "title": "Test", "spaceId": "s1"},
+        )
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit) as exc:
+            get_page_content(client, "page-1")
+        assert exc.value.code == 1
+
+    def test_null_content_is_a_valid_empty_page(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/info",
+            json={"id": "page-1", "title": "Empty", "spaceId": "s1", "content": None},
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = get_page_content(client, "page-1")
+        assert result["content"] is None
 
 
 class TestListRecentPages:

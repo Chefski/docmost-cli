@@ -116,6 +116,26 @@ class TestDocmostClient:
             result = client.post("/users/me")
         assert result["name"] == "Success"
 
+    def test_post_raw_retries_then_accepts_empty_response(
+        self, httpx_mock, api_key_settings, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move-to-space",
+            status_code=503,
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move-to-space",
+            status_code=200,
+        )
+        with DocmostClient(api_key_settings) as client:
+            response = client.post_raw(
+                "/pages/move-to-space",
+                json={"pageId": "page-1", "spaceId": "space-2"},
+            )
+        assert response.status_code == 200
+        assert len(httpx_mock.get_requests()) == 2
+
     def test_429_all_retries_exhausted(self, httpx_mock, api_key_settings, monkeypatch) -> None:
         monkeypatch.setattr("time.sleep", lambda _: None)
         for _ in range(4):
