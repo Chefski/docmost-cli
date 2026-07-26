@@ -86,6 +86,10 @@ tracking sync state.
 The complete pull is downloaded and validated in a sibling staging directory
 before publication. If a page, attachment, validation, or filesystem operation
 fails, the previous sync remains in place.
+.PP
+If the target changes while downloads are in progress, pull aborts without
+overwriting the intervening edits. Publication uses an atomic directory exchange
+where supported and a durable recovery journal on portable fallback paths.
 .TP
 .BI \-\-dir " path"
 Target directory.

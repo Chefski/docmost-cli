@@ -1,9 +1,14 @@
 """Pull space pages from Docmost server to local directory."""
 
+import ctypes
+import errno
+import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any
@@ -12,6 +17,8 @@ from docmost_cli.api.client import DocmostClient
 from docmost_cli.output.formatter import _err_console as _err
 
 __all__ = ["PullResult", "flatten_tree", "pull_space"]
+
+_SNAPSHOT_UNSET = object()
 
 
 @dataclass
@@ -75,6 +82,18 @@ def _remove_tree(path: Path) -> None:
 
 def _remove_managed_file(root: Path, relative_path: Path) -> None:
     """Remove one previously managed file without deleting unrelated content."""
+    parent = root
+    for part in relative_path.parts[:-1]:
+        parent /= part
+        if parent.is_symlink():
+            raise FileExistsError(
+                f"refusing to remove a managed file through a symlink: {relative_path}"
+            )
+        if not parent.exists():
+            return
+        if not parent.is_dir():
+            raise NotADirectoryError(f"managed path parent is not a directory: {relative_path}")
+
     destination = root / relative_path
     if destination.is_symlink() or destination.is_file():
         destination.unlink()
@@ -209,24 +228,296 @@ def _temporary_sibling(target: Path, purpose: str) -> Path:
     return Path(tempfile.mkdtemp(prefix=prefix, dir=target.parent))
 
 
-def _publish_staged_pull(staging_path: Path, target: Path) -> None:
-    """Publish a staged directory with rollback if the second rename fails."""
+def _apply_default_directory_mode(path: Path) -> None:
+    """Apply the mode that a normal mkdir would receive under the current umask."""
+    probe = path / ".docmost-directory-mode-probe"
+    probe.mkdir()
+    mode = stat.S_IMODE(probe.stat().st_mode)
+    probe.rmdir()
+    path.chmod(mode)
+
+
+def _snapshot_target(target: Path) -> dict[str, tuple[Any, ...]] | None:
+    """Capture target state without following symlinks."""
+    if not target.exists() and not target.is_symlink():
+        return None
+
+    entries: dict[str, tuple[Any, ...]] = {}
+
+    def record(path: Path, relative_path: str) -> None:
+        path_stat = path.lstat()
+        file_type = stat.S_IFMT(path_stat.st_mode)
+        link_target = os.readlink(path) if stat.S_ISLNK(path_stat.st_mode) else None
+        entries[relative_path] = (
+            file_type,
+            stat.S_IMODE(path_stat.st_mode),
+            path_stat.st_size,
+            path_stat.st_mtime_ns,
+            path_stat.st_ino,
+            link_target,
+        )
+
+    record(target, ".")
+    for current_root, dir_names, file_names in os.walk(target, followlinks=False):
+        dir_names.sort()
+        file_names.sort()
+        current = Path(current_root)
+        for name in (*dir_names, *file_names):
+            path = current / name
+            record(path, path.relative_to(target).as_posix())
+    return entries
+
+
+def _assert_target_unchanged(
+    target: Path,
+    expected_snapshot: dict[str, tuple[Any, ...]] | None,
+) -> None:
+    """Abort rather than overwrite local changes made while a pull was staging."""
+    if _snapshot_target(target) != expected_snapshot:
+        raise RuntimeError(
+            f"Target directory '{target}' changed while the pull was staging; "
+            "the previous sync and intervening local changes were preserved."
+        )
+
+
+def _atomic_exchange_directories(left: Path, right: Path) -> bool:
+    """Atomically exchange two directories when the operating system supports it."""
+    if sys.platform not in {"darwin", "linux"}:
+        return False
+
+    libc = ctypes.CDLL(None, use_errno=True)
+    left_bytes = os.fsencode(left)
+    right_bytes = os.fsencode(right)
+    if sys.platform == "darwin":
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is None:
+            return False
+        renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+        renamex_np.restype = ctypes.c_int
+        result = renamex_np(left_bytes, right_bytes, 0x00000002)  # RENAME_SWAP
+    else:
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is None:
+            return False
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        result = renameat2(
+            -100,  # AT_FDCWD
+            left_bytes,
+            -100,  # AT_FDCWD
+            right_bytes,
+            0x00000002,  # RENAME_EXCHANGE
+        )
+
+    if result == 0:
+        return True
+    error_number = ctypes.get_errno()
+    unsupported_errors = {
+        errno.EINVAL,
+        errno.ENOSYS,
+        errno.EXDEV,
+        getattr(errno, "ENOTSUP", errno.EINVAL),
+        getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+    }
+    if error_number in unsupported_errors:
+        return False
+    raise OSError(error_number, os.strerror(error_number))
+
+
+def _publish_journal_path(target: Path) -> Path:
+    """Return the durable recovery journal path for a target."""
+    return target.parent / f".{target.name}.pull-transaction.json"
+
+
+def _sync_directory(path: Path) -> None:
+    """Best-effort fsync of a directory after journal changes."""
+    with suppress(OSError):
+        descriptor = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _write_publish_journal(
+    target: Path,
+    staging_path: Path,
+    backup_path: Path | None,
+) -> None:
+    """Persist enough sibling names to recover an interrupted publication."""
+    journal_path = _publish_journal_path(target)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f"{journal_path.name}.tmp-",
+        dir=target.parent,
+    )
+    temporary_path = Path(temporary_name)
+    payload = {
+        "version": 1,
+        "target": target.name,
+        "staging": staging_path.name,
+        "backup": backup_path.name if backup_path else None,
+    }
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as journal:
+            json.dump(payload, journal, sort_keys=True)
+            journal.write("\n")
+            journal.flush()
+            os.fsync(journal.fileno())
+        os.link(temporary_path, journal_path)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            f"another pull publication or recovery is active for '{target}'"
+        ) from exc
+    finally:
+        with suppress(FileNotFoundError):
+            temporary_path.unlink()
+    _sync_directory(target.parent)
+
+
+def _remove_publish_journal(target: Path) -> None:
+    """Remove a completed publication journal durably."""
+    journal_path = _publish_journal_path(target)
+    try:
+        journal_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        _err.print(
+            f"[yellow]Warning:[/yellow] could not remove recovery journal '{journal_path}': {exc}"
+        )
+    _sync_directory(target.parent)
+
+
+def _journal_sibling(
+    target: Path,
+    value: object,
+    *,
+    purpose: str,
+    optional: bool = False,
+) -> Path | None:
+    """Validate a journal-owned sibling path before recovery."""
+    if optional and value is None:
+        return None
+    if not isinstance(value, str) or Path(value).name != value:
+        raise RuntimeError(f"invalid {purpose} path in pull recovery journal")
+    expected_prefix = f".{target.name}.{purpose}-"
+    if not value.startswith(expected_prefix):
+        raise RuntimeError(f"unexpected {purpose} path in pull recovery journal")
+    return target.parent / value
+
+
+def _recover_interrupted_publish(target: Path) -> None:
+    """Restore or finish a publication described by a durable sibling journal."""
+    journal_path = _publish_journal_path(target)
+    try:
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"cannot read pull recovery journal '{journal_path}'") from exc
+    except OSError as exc:
+        raise RuntimeError(f"cannot read pull recovery journal '{journal_path}'") from exc
+
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or payload.get("target") != target.name
+    ):
+        raise RuntimeError(f"invalid pull recovery journal '{journal_path}'")
+    staging_path = _journal_sibling(target, payload.get("staging"), purpose="pull-staging")
+    backup_path = _journal_sibling(
+        target,
+        payload.get("backup"),
+        purpose="pull-backup",
+        optional=True,
+    )
+    assert staging_path is not None
+
+    target_exists = target.exists() or target.is_symlink()
+    backup_exists = backup_path is not None and (backup_path.exists() or backup_path.is_symlink())
+    if not target_exists:
+        if not backup_exists or backup_path is None:
+            raise RuntimeError(
+                f"pull recovery could not restore missing target '{target}'; "
+                f"inspect '{journal_path}'"
+            )
+        os.replace(backup_path, target)
+        backup_exists = False
+
+    if staging_path.exists() or staging_path.is_symlink():
+        _remove_tree(staging_path)
+    if backup_exists and backup_path is not None:
+        _remove_tree(backup_path)
+    _remove_publish_journal(target)
+
+
+def _publish_staged_pull(
+    staging_path: Path,
+    target: Path,
+    *,
+    expected_snapshot: dict[str, tuple[Any, ...]] | None | object = _SNAPSHOT_UNSET,
+) -> None:
+    """Publish staged state atomically, with a recoverable portable fallback."""
+    if expected_snapshot is not _SNAPSHOT_UNSET:
+        assert expected_snapshot is None or isinstance(expected_snapshot, dict)
+        _assert_target_unchanged(target, expected_snapshot)
     if not target.exists() and not target.is_symlink():
         os.replace(staging_path, target)
         return
 
     backup_path = _temporary_sibling(target, "pull-backup")
-    backup_path.rmdir()
+    try:
+        _write_publish_journal(target, staging_path, backup_path)
+    except BaseException:
+        _remove_tree(backup_path)
+        raise
+    if expected_snapshot is not _SNAPSHOT_UNSET:
+        try:
+            assert expected_snapshot is None or isinstance(expected_snapshot, dict)
+            _assert_target_unchanged(target, expected_snapshot)
+        except BaseException:
+            _remove_tree(backup_path)
+            _remove_publish_journal(target)
+            raise
+
+    if _atomic_exchange_directories(staging_path, target):
+        try:
+            _remove_tree(staging_path)
+        except OSError as exc:
+            _err.print(
+                f"[yellow]Warning:[/yellow] could not remove previous sync '{staging_path}': {exc}"
+            )
+        try:
+            _remove_tree(backup_path)
+        except OSError as exc:
+            _err.print(
+                f"[yellow]Warning:[/yellow] could not remove reserved backup '{backup_path}': {exc}"
+            )
+        _remove_publish_journal(target)
+        return
+
+    try:
+        backup_path.rmdir()
+    except OSError:
+        _remove_publish_journal(target)
+        raise
     os.replace(target, backup_path)
     try:
         os.replace(staging_path, target)
     except BaseException:
         try:
             os.replace(backup_path, target)
+            _remove_publish_journal(target)
         except OSError as rollback_error:
             raise RuntimeError(
                 f"pull publication failed and rollback could not restore '{target}'; "
-                f"the previous data remains at '{backup_path}'"
+                f"the previous data and recovery journal remain at '{backup_path}'"
             ) from rollback_error
         raise
 
@@ -234,6 +525,7 @@ def _publish_staged_pull(staging_path: Path, target: Path) -> None:
         _remove_tree(backup_path)
     except OSError as exc:
         _err.print(f"[yellow]Warning:[/yellow] could not remove backup '{backup_path}': {exc}")
+    _remove_publish_journal(target)
 
 
 def flatten_tree(
@@ -320,6 +612,7 @@ def pull_space(
         print_error("The sync target must not be a filesystem root.")
     if target_path.is_symlink():
         print_error(f"Target directory '{dir_path}' must not be a symbolic link.")
+    _recover_interrupted_publish(target_path)
     if target_path.exists() and not target_path.is_dir():
         print_error(f"Target path '{dir_path}' is not a directory.")
 
@@ -339,6 +632,7 @@ def pull_space(
     total = len(flat_pages)
 
     # 4. Prepare a same-filesystem staging directory so publication uses renames.
+    target_snapshot = _snapshot_target(target_path)
     staging_path = _temporary_sibling(target_path, "pull-staging")
     published = False
     try:
@@ -349,6 +643,9 @@ def pull_space(
                 dirs_exist_ok=True,
                 symlinks=True,
             )
+            _assert_target_unchanged(target_path, target_snapshot)
+        else:
+            _apply_default_directory_mode(staging_path)
         if existing_manifest is not None:
             _remove_previous_managed_state(staging_path, existing_manifest)
 
@@ -434,7 +731,12 @@ def pull_space(
         )
 
         # 8. Publish as one directory snapshot, with rollback on rename failure.
-        _publish_staged_pull(staging_path, target_path)
+        _assert_target_unchanged(target_path, target_snapshot)
+        _publish_staged_pull(
+            staging_path,
+            target_path,
+            expected_snapshot=target_snapshot,
+        )
         published = True
     finally:
         if not published and (staging_path.exists() or staging_path.is_symlink()):

@@ -289,6 +289,8 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
 - Pulls stage and validate every managed file before replacing the live directory
 - Failed pulls leave the previous sync untouched
 - Forced pulls remove stale manifest-owned pages/assets but preserve unrelated local files
+- Pulls abort when the target changes during staging instead of overwriting intervening edits
+- Publication uses atomic directory exchange where available and journaled recovery otherwise
 
 **Stable content and asset updates:**
 - Both editions use `POST /pages/update` with `operation: replace`, preserving page IDs

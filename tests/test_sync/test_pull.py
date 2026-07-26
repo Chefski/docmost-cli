@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from pathlib import Path
 
+import httpx
 import pytest
 
 from docmost_cli.api.client import DocmostClient
@@ -19,7 +21,17 @@ from docmost_cli.sync.manifest import (
     sanitize_filename,
     save_manifest,
 )
-from docmost_cli.sync.pull import PullResult, _publish_staged_pull, flatten_tree, pull_space
+from docmost_cli.sync.pull import (
+    PullResult,
+    _atomic_exchange_directories,
+    _publish_journal_path,
+    _publish_staged_pull,
+    _recover_interrupted_publish,
+    _temporary_sibling,
+    _write_publish_journal,
+    flatten_tree,
+    pull_space,
+)
 
 # ---------------------------------------------------------------------------
 # Helper: create a client for integration tests
@@ -547,6 +559,10 @@ class TestPullAtomicPublication:
             real_replace(source, destination)
 
         monkeypatch.setattr("docmost_cli.sync.pull.os.replace", fail_staging_publish)
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            lambda _left, _right: False,
+        )
 
         with pytest.raises(OSError, match="simulated publish failure"):
             _publish_staged_pull(staging, target)
@@ -554,6 +570,115 @@ class TestPullAtomicPublication:
         assert (target / "old.txt").read_text(encoding="utf-8") == "old"
         assert not (target / "new.txt").exists()
         assert not list(tmp_path.glob(".test.pull-backup-*"))
+        assert not _publish_journal_path(target).exists()
+
+    def test_recovery_restores_backup_after_interrupted_fallback(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        backup = _temporary_sibling(target, "pull-backup")
+        backup.rmdir()
+        _write_publish_journal(target, staging, backup)
+        os.replace(target, backup)
+
+        _recover_interrupted_publish(target)
+
+        assert (target / "old.txt").read_text(encoding="utf-8") == "old"
+        assert not staging.exists()
+        assert not backup.exists()
+        assert not _publish_journal_path(target).exists()
+
+    def test_atomic_exchange_keeps_both_complete_snapshots(self, tmp_path: Path) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = tmp_path / ".test.pull-staging-exchange"
+        staging.mkdir()
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+
+        if not _atomic_exchange_directories(staging, target):
+            pytest.skip("atomic directory exchange is not available on this filesystem")
+
+        assert (target / "new.txt").read_text(encoding="utf-8") == "new"
+        assert (staging / "old.txt").read_text(encoding="utf-8") == "old"
+
+    def test_intervening_local_change_aborts_publication(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        old_filename = sanitize_filename("Old Page", "same-page")
+        write_sync_file(
+            target / old_filename,
+            {"id": "same-page", "title": "Old Page", "parent_id": "", "icon": ""},
+            "old\n",
+        )
+        save_manifest(
+            target,
+            build_manifest(
+                "test",
+                "space-1",
+                [
+                    {
+                        "id": "same-page",
+                        "title": "Old Page",
+                        "filename": old_filename,
+                        "parent_id": None,
+                        "icon": "",
+                        "content_hash": compute_content_hash("old\n"),
+                    }
+                ],
+            ),
+        )
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "same-page",
+                    "title": "New Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+
+        def change_target_during_download(_request: httpx.Request) -> httpx.Response:
+            (target / "intervening.txt").write_text("do not lose", encoding="utf-8")
+            return httpx.Response(
+                200,
+                json={
+                    "id": "same-page",
+                    "title": "New Page",
+                    "spaceId": "space-1",
+                    "content": _PM_DOC,
+                },
+            )
+
+        httpx_mock.add_callback(
+            change_target_during_download,
+            url=f"{_TEST_URL}/api/pages/info",
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/content",
+            status_code=404,
+        )
+
+        with _make_client() as client, pytest.raises(RuntimeError, match="changed while"):
+            pull_space(client, "test", target, force=True)
+
+        assert (target / "intervening.txt").read_text(encoding="utf-8") == "do not lose"
+        assert (target / old_filename).exists()
+        assert not (target / sanitize_filename("New Page", "same-page")).exists()
+        assert not list(tmp_path.glob(".test.pull-*"))
 
 
 class TestPullManagedCleanup:
@@ -728,3 +853,56 @@ class TestPullPathSafety:
 
         with _make_client() as client, pytest.raises(SystemExit):
             pull_space(client, "test", root)
+
+    def test_rejects_managed_cleanup_through_symlinked_parent(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        external_file = outside / "external.txt"
+        external_file.write_text("must survive", encoding="utf-8")
+        linked_parent = target / "files" / "asset-id"
+        linked_parent.parent.mkdir()
+        try:
+            linked_parent.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        save_manifest(
+            target,
+            build_manifest(
+                "test",
+                "space-1",
+                [],
+                {"asset-id": {"path": "files/asset-id/external.txt"}},
+            ),
+        )
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(httpx_mock, [])
+
+        with _make_client() as client, pytest.raises(FileExistsError, match="symlink"):
+            pull_space(client, "test", target, force=True)
+
+        assert external_file.read_text(encoding="utf-8") == "must survive"
+        assert linked_parent.is_symlink()
+        assert not list(tmp_path.glob(".test.pull-*"))
+
+    def test_new_target_uses_normal_mkdir_permissions(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        comparison = tmp_path / "normal-directory"
+        comparison.mkdir()
+        expected_mode = stat.S_IMODE(comparison.stat().st_mode)
+        target = tmp_path / "test"
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(httpx_mock, [])
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        assert stat.S_IMODE(target.stat().st_mode) == expected_mode

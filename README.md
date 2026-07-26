@@ -131,7 +131,9 @@ content. Relative image/file links to existing local files are treated as page a
 Pulls are staged and validated before the live directory is replaced. If any page or attachment
 fails to download, the previous sync remains unchanged. A forced pull removes stale pages and
 assets recorded by the old manifest, including files renamed remotely, while preserving unrelated
-local files.
+local files. The CLI aborts if the target changes while downloads are in progress. Publication
+uses an atomic directory exchange where the platform supports it and a durable recovery journal
+for portable fallback.
 
 ## Configuration
 
