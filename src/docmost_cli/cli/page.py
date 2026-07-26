@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from docmost_cli.api.pages import (
+    apply_import_overrides,
     build_page_tree,
     copy_page,
     create_and_place_page,
@@ -388,6 +389,9 @@ def page_import_cmd(
     if not file.exists():
         print_error(f"File not found: {file}")
 
+    if file.suffix.lower() == ".zip" and (title is not None or parent is not None):
+        print_error("--title and --parent cannot override metadata in a ZIP import.")
+
     client = get_client()
     space_id = resolve_space_id(client, space_slug)
 
@@ -395,8 +399,6 @@ def page_import_cmd(
     file_bytes = file.read_bytes()
 
     if file.suffix.lower() == ".zip":
-        if title is not None or parent is not None:
-            print_error("--title and --parent cannot override metadata in a ZIP import.")
         result = import_page_archive(
             client,
             space_id=space_id,
@@ -425,7 +427,16 @@ def page_import_cmd(
         space_id=space_id,
         file_name=file.name,
         file_bytes=file_bytes,
-        parent_page_id=parent,
     )
     new_id = extract_id(result)
+
+    # The import controller consumes only the file and spaceId. Apply explicit
+    # metadata overrides through the page endpoints after the page exists.
+    apply_import_overrides(
+        client,
+        result=result,
+        title=title,
+        parent_page_id=parent,
+    )
+
     print_result(new_id, f"Imported '{detected_title}' from {file.name}")

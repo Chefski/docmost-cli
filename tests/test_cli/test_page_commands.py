@@ -549,9 +549,24 @@ class TestPageImport:
         body = httpx_mock.get_requests()[1].read()
         assert b"generic" in body
 
-    def test_import_with_title(self, tmp_config, tmp_path, httpx_mock) -> None:
-        md_file = tmp_path / "doc.md"
-        md_file.write_text("# Auto Title\n\nSome content")
+    @pytest.mark.parametrize(
+        ("file_name", "file_content", "mime_type"),
+        [
+            ("doc.md", "# Auto Title\n\nSome content", b"text/markdown"),
+            ("doc.html", "<h1>Auto Title</h1><p>Some content</p>", b"text/html"),
+        ],
+    )
+    def test_import_applies_title_and_parent_overrides(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+        file_name,
+        file_content,
+        mime_type,
+    ) -> None:
+        import_file = tmp_path / file_name
+        import_file.write_text(file_content)
 
         httpx_mock.add_response(
             url="https://docs.example.com/api/spaces",
@@ -560,6 +575,14 @@ class TestPageImport:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/import",
             json={"id": "imported-page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/update",
+            json={"id": "imported-page", "title": "Custom Title"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            json={"id": "imported-page", "parentPageId": "parent-1"},
         )
         result = runner.invoke(
             app,
@@ -570,13 +593,65 @@ class TestPageImport:
                 "import",
                 "eng",
                 "--file",
-                str(md_file),
+                str(import_file),
                 "--title",
                 "Custom Title",
+                "--parent",
+                "parent-1",
             ],
         )
         assert result.exit_code == 0
         assert "imported-page" in result.output
+
+        import json
+
+        requests = httpx_mock.get_requests()
+        assert [request.url.path for request in requests] == [
+            "/api/spaces",
+            "/api/pages/import",
+            "/api/pages/update",
+            "/api/pages/move",
+        ]
+        assert mime_type in requests[1].read()
+        assert b"parentPageId" not in requests[1].read()
+        assert json.loads(requests[2].content) == {
+            "pageId": "imported-page",
+            "title": "Custom Title",
+        }
+        assert json.loads(requests[3].content) == {
+            "pageId": "imported-page",
+            "parentPageId": "parent-1",
+            "position": "aaaaa",
+        }
+
+    @pytest.mark.parametrize("override", [["--title", "Title"], ["--parent", "parent-1"]])
+    def test_import_zip_rejects_metadata_overrides(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+        override,
+    ) -> None:
+        archive = tmp_path / "portable.zip"
+        archive.write_bytes(b"zip-bytes")
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "import",
+                "eng",
+                "--file",
+                str(archive),
+                *override,
+            ],
+        )
+
+        assert result.exit_code != 0
+        assert "cannot override metadata in a ZIP import" in result.output
+        assert httpx_mock.get_requests() == []
 
     def test_import_auto_title_from_h1(self, tmp_config, tmp_path, httpx_mock) -> None:
         md_file = tmp_path / "doc.md"
@@ -596,6 +671,103 @@ class TestPageImport:
         )
         assert result.exit_code == 0
         assert "imported-page" in result.output
+
+    def test_import_reports_page_id_when_parent_override_fails(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+    ) -> None:
+        md_file = tmp_path / "doc.md"
+        md_file.write_text("# Imported Page\n\nContent")
+
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces",
+            json={"data": {"items": [{"id": "s1", "slug": "eng", "name": "Eng"}]}},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            status_code=404,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "import",
+                "eng",
+                "--file",
+                str(md_file),
+                "--parent",
+                "missing-parent",
+            ],
+        )
+
+        assert result.exit_code == 4
+        assert result.stdout == "imported-page\n"
+        assert "failed to apply" in result.stderr
+        assert "requested override" in result.stderr
+
+    def test_import_attempts_parent_move_when_title_override_fails(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+    ) -> None:
+        md_file = tmp_path / "doc.md"
+        md_file.write_text("# Imported Page\n\nContent")
+
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces",
+            json={"data": {"items": [{"id": "s1", "slug": "eng", "name": "Eng"}]}},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/update",
+            status_code=422,
+            json={"message": "Invalid title"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            json={"id": "imported-page", "parentPageId": "parent-1"},
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "import",
+                "eng",
+                "--file",
+                str(md_file),
+                "--title",
+                "Rejected Title",
+                "--parent",
+                "parent-1",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert result.stdout == "imported-page\n"
+        assert [request.url.path for request in httpx_mock.get_requests()] == [
+            "/api/spaces",
+            "/api/pages/import",
+            "/api/pages/update",
+            "/api/pages/move",
+        ]
+        assert "Validation error: Invalid title" in result.stderr
+        assert "failed to apply" in result.stderr
 
 
 class TestPageListTree:

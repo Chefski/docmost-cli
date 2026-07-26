@@ -6,6 +6,7 @@ import pytest
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pages import (
+    PageImportOverrideError,
     copy_page,
     create_page_via_import,
     delete_page,
@@ -17,6 +18,7 @@ from docmost_cli.api.pages import (
     get_page_history,
     get_page_info,
     get_sidebar_pages,
+    import_page,
     import_page_archive,
     list_recent_pages,
     move_page,
@@ -323,6 +325,76 @@ class TestImportPageArchive:
         assert b'name="source"' in body
         assert b"generic" in body
         assert b"portable.zip" in body
+
+
+class TestImportPage:
+    def test_parent_compatibility_moves_after_import(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            json={"id": "imported-page"},
+        )
+
+        with DocmostClient(api_key_settings) as client:
+            result = import_page(
+                client,
+                space_id="space-1",
+                file_name="page.md",
+                file_bytes=b"# Page",
+                parent_page_id="parent-1",
+            )
+
+        assert result["id"] == "imported-page"
+        requests = httpx_mock.get_requests()
+        assert [request.url.path for request in requests] == [
+            "/api/pages/import",
+            "/api/pages/move",
+        ]
+        assert b"parentPageId" not in requests[0].read()
+        assert json.loads(requests[1].content) == {
+            "pageId": "imported-page",
+            "parentPageId": "parent-1",
+            "position": "aaaaa",
+        }
+
+    def test_failed_parent_move_preserves_import_result(
+        self,
+        httpx_mock,
+        api_key_settings,
+        capsys,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page", "title": "Page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            status_code=404,
+        )
+
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(PageImportOverrideError) as exc,
+        ):
+            import_page(
+                client,
+                space_id="space-1",
+                file_name="page.md",
+                file_bytes=b"# Page",
+                parent_page_id="missing-parent",
+            )
+
+        assert exc.value.code == 4
+        assert exc.value.page_id == "imported-page"
+        assert exc.value.result == {"id": "imported-page", "title": "Page"}
+        assert len(exc.value.failures) == 1
+        assert exc.value.failures[0].code == 4
+        captured = capsys.readouterr()
+        assert captured.out == "imported-page\n"
+        assert "failed to apply the requested override" in captured.err
 
 
 class TestGetSidebarPages:

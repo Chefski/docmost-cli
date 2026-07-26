@@ -398,7 +398,7 @@ POST /pages/sidebar-pages → {spaceId} → tree structure
 POST /pages/recent        → {spaceId, limit?, cursor?}
 POST /pages/children      → {pageId, limit?, cursor?}
 POST /pages/history       → {pageId, limit?, cursor?}
-POST /pages/import        → multipart: file (md/html), spaceId, parentPageId?
+POST /pages/import        → multipart: file (md/html), spaceId
 POST /pages/import-zip    → multipart: file (zip), spaceId, source="generic"
 POST /pages/export        → {pageId, format, includeAttachments?, includeChildren?}
 ```
@@ -535,6 +535,9 @@ For `page create` and `page update`. Two strategies available:
 
 1. **Create pages through Docmost's import endpoint** (`POST /pages/import`)
    — Send Markdown as a file and let Docmost perform the initial conversion.
+   The endpoint only consumes the file and `spaceId`; explicit title and parent
+   overrides are applied afterward through `POST /pages/update` and
+   `POST /pages/move`.
 
 2. **Update existing pages through the shared page endpoint**
    (`POST /pages/update`) with `format: "markdown"`, the page content, and an
@@ -870,5 +873,6 @@ These items need investigation during implementation. Update this section as ans
       ProseMirror JSON? *Current approach*: Send content as provided; wrap in
       minimal ProseMirror JSON if API rejects plain text.
 - [x] **Import endpoint fields**: `POST /pages/import` uses multipart `file` and
-      `spaceId`; `POST /pages/import-zip` additionally requires `source=generic`
+      `spaceId`; title and parent overrides use page update/move calls after
+      import. `POST /pages/import-zip` additionally requires `source=generic`
       for portable Docmost ZIP archives.
