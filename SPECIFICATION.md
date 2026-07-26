@@ -171,7 +171,7 @@ docmost-cli page delete <page-id>                 # Delete a page (requires conf
 docmost-cli page move <page-id>                   # Move a page
   --parent <page-id>                          # New parent (omit for root)
   --space <space-slug>                        # Move to different space
-  --position <int>                            # Position among siblings
+  --position <fractional-index>               # Position among siblings (5-12 chars)
 
 docmost-cli page duplicate <page-id>              # Duplicate a page
 
@@ -388,12 +388,12 @@ POST /auth/logout
 **Pages:**
 ```
 POST /pages/info          → {pageId, format?} → page metadata/content
-POST /pages/create        → {title, spaceId, parentPageId?, icon?, content?}
+POST /pages/create        → {title, spaceId, parentPageId?, icon?, content?, format?}
 POST /pages/update        → {pageId, title?, icon?, content?, format?, operation?}
 POST /pages/delete        → {pageId}
-POST /pages/move          → {pageId, parentPageId?, position?, spaceId?}
-POST /pages/duplicate     → {pageId}
-POST /pages/copy          → {pageId, spaceId}
+POST /pages/move          → {pageId, parentPageId: string|null, position}
+POST /pages/move-to-space → {pageId, spaceId}
+POST /pages/duplicate     → {pageId, spaceId?}
 POST /pages/sidebar-pages → {spaceId} → tree structure
 POST /pages/recent        → {spaceId, limit?, cursor?}
 POST /pages/children      → {pageId, limit?, cursor?}
@@ -520,10 +520,11 @@ This is the critical path for `page get`. The converter must handle all Docmost 
 
 ### 6.2 Markdown → ProseMirror
 
-For `page create` and `page update`. Two strategies available:
+For `page create` and `page update`:
 
-1. **Create pages through Docmost's import endpoint** (`POST /pages/import`)
-   — Send Markdown as a file and let Docmost perform the initial conversion.
+1. **Create pages through Docmost's page endpoint** (`POST /pages/create`)
+   with `format: "markdown"`. The same request sets the title, space, optional
+   parent and icon, and initial content.
 
 2. **Update existing pages through the shared page endpoint**
    (`POST /pages/update`) with `format: "markdown"`, the page content, and an
@@ -689,7 +690,7 @@ def print_error(message: str, exit_code: int = 1) -> NoReturn:
 ### Phase 2: Write Operations
 > **Edition-aware**: All write operations use endpoints shared by both editions.
 > Content updates use `POST /pages/update`, preserving page and attachment IDs.
-- [x] `docmost-cli page create` (via import endpoint — both editions)
+- [x] `docmost-cli page create` (via `/pages/create` — both editions)
 - [x] `docmost-cli page update` (title and content: both editions)
 - [x] `docmost-cli page delete` (with confirmation — both editions)
 - [x] `docmost-cli page move` (both editions)

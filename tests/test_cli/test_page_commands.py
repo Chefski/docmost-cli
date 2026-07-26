@@ -52,7 +52,7 @@ class TestPageCreate:
             json={"data": {"items": [{"id": "space-1", "slug": "eng", "name": "Eng"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
+            url="https://docs.example.com/api/pages/create",
             json={"id": "page-new"},
         )
         result = runner.invoke(
@@ -72,17 +72,13 @@ class TestPageCreate:
         assert result.exit_code == 0
         assert "page-new" in result.output
 
-    def test_create_with_parent_calls_move(self, tmp_config, httpx_mock) -> None:
+    def test_create_with_parent(self, tmp_config, httpx_mock) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/spaces",
             json={"data": {"items": [{"id": "space-1", "slug": "eng", "name": "Eng"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
-            json={"id": "child-page"},
-        )
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/move",
+            url="https://docs.example.com/api/pages/create",
             json={"id": "child-page"},
         )
         result = runner.invoke(
@@ -103,14 +99,13 @@ class TestPageCreate:
         )
         assert result.exit_code == 0
         assert "child-page" in result.output
-        # Verify move was called with position parameter
         import json as json_mod
 
-        move_requests = [r for r in httpx_mock.get_requests() if "/pages/move" in str(r.url)]
-        assert len(move_requests) == 1
-        move_body = json_mod.loads(move_requests[0].content)
-        assert move_body["parentPageId"] == "parent-1"
-        assert move_body["position"] == "aaaaa"
+        create_requests = [r for r in httpx_mock.get_requests() if "/pages/create" in str(r.url)]
+        assert len(create_requests) == 1
+        create_body = json_mod.loads(create_requests[0].content)
+        assert create_body["parentPageId"] == "parent-1"
+        assert create_body["format"] == "markdown"
 
     def test_create_empty_page(self, tmp_config, httpx_mock) -> None:
         httpx_mock.add_response(
@@ -118,7 +113,7 @@ class TestPageCreate:
             json={"data": {"items": [{"id": "space-1", "slug": "eng", "name": "Eng"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
+            url="https://docs.example.com/api/pages/create",
             json={"id": "empty-page"},
         )
         result = runner.invoke(
@@ -137,7 +132,7 @@ class TestPageCreate:
             json={"data": {"items": [{"id": "space-1", "slug": "eng", "name": "Eng"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
+            url="https://docs.example.com/api/pages/create",
             json={"id": "file-page"},
         )
         result = runner.invoke(
@@ -214,8 +209,7 @@ class TestPageMove:
             json={"data": {"items": [{"id": "space-2", "slug": "staging", "name": "Staging"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/move",
-            json={"id": "page-1"},
+            url="https://docs.example.com/api/pages/move-to-space",
         )
         result = runner.invoke(
             app,
@@ -273,8 +267,11 @@ class TestPageList:
 class TestPageGet:
     def test_get_markdown(self, tmp_config, httpx_mock) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
+            url="https://docs.example.com/api/pages/info",
             json={
+                "id": "page-1",
+                "title": "Hello",
+                "spaceId": "s1",
                 "content": {
                     "type": "doc",
                     "content": [
@@ -288,10 +285,6 @@ class TestPageGet:
                 }
             },
         )
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/info",
-            json={"id": "page-1", "title": "Hello", "spaceId": "s1"},
-        )
         result = runner.invoke(app, ["--config", str(tmp_config), "page", "get", "page-1"])
         assert result.exit_code == 0
         assert "# Hello" in result.output
@@ -300,28 +293,18 @@ class TestPageGet:
     def test_get_raw(self, tmp_config, httpx_mock) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/info",
-            json={"id": "page-1", "title": "Hello", "spaceId": "s1"},
-        )
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
-            json={"content": {"type": "doc", "content": []}},
+            json={
+                "id": "page-1",
+                "title": "Hello",
+                "spaceId": "s1",
+                "content": {"type": "doc", "content": []},
+            },
         )
         result = runner.invoke(app, ["--config", str(tmp_config), "page", "get", "page-1", "--raw"])
         assert result.exit_code == 0
         assert '"type"' in result.output
 
     def test_get_meta(self, tmp_config, httpx_mock) -> None:
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
-            json={
-                "content": {
-                    "type": "doc",
-                    "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Content"}]},
-                    ],
-                }
-            },
-        )
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/info",
             json={
@@ -330,6 +313,12 @@ class TestPageGet:
                 "spaceId": "s1",
                 "createdAt": "2026-01-01",
                 "updatedAt": "2026-03-20",
+                "content": {
+                    "type": "doc",
+                    "content": [
+                        {"type": "paragraph", "content": [{"type": "text", "text": "Content"}]},
+                    ],
+                },
             },
         )
         result = runner.invoke(
@@ -343,8 +332,11 @@ class TestPageGet:
     def test_get_with_emoji_content(self, tmp_config, httpx_mock) -> None:
         """Emoji in page content should not crash (Windows cp1252 fix)."""
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
+            url="https://docs.example.com/api/pages/info",
             json={
+                "id": "page-emoji",
+                "title": "Test",
+                "spaceId": "s1",
                 "content": {
                     "type": "doc",
                     "content": [
@@ -358,10 +350,6 @@ class TestPageGet:
                     ],
                 }
             },
-        )
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/info",
-            json={"id": "page-emoji", "title": "Test", "spaceId": "s1"},
         )
         result = runner.invoke(app, ["--config", str(tmp_config), "page", "get", "page-emoji"])
         assert result.exit_code == 0
@@ -395,7 +383,7 @@ class TestPageCopy:
             json={"data": {"items": [{"id": "space-2", "slug": "target", "name": "Target"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/copy",
+            url="https://docs.example.com/api/pages/duplicate",
             json={"id": "page-copy"},
         )
         result = runner.invoke(

@@ -11,6 +11,7 @@ __all__ = [
     "build_page_tree",
     "copy_page",
     "create_and_place_page",
+    "create_page",
     "create_page_via_import",
     "delete_page",
     "duplicate_page",
@@ -35,7 +36,7 @@ POSITION_FIRST = "aaaaa"
 
 
 def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
-    """Get page metadata by ID.
+    """Get page metadata and content by ID.
 
     Args:
         client: Authenticated Docmost client.
@@ -49,6 +50,41 @@ def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def create_page(
+    client: DocmostClient,
+    *,
+    space_id: str,
+    title: str,
+    content: str,
+    parent_page_id: str | None = None,
+    icon: str | None = None,
+) -> dict[str, Any]:
+    """Create a page using Docmost's page creation endpoint.
+
+    Args:
+        client: Authenticated Docmost client.
+        space_id: Target space UUID.
+        title: Page title.
+        content: Markdown content.
+        parent_page_id: Parent page UUID (optional).
+        icon: Page icon emoji (optional).
+
+    Returns:
+        Raw API response dict (should contain page ID).
+    """
+    body = build_body(
+        {
+            "spaceId": space_id,
+            "title": title,
+            "content": content,
+            "format": "markdown",
+        },
+        parentPageId=parent_page_id,
+        icon=icon,
+    )
+    return client.post("/pages/create", json=body)
+
+
 def create_page_via_import(
     client: DocmostClient,
     *,
@@ -57,33 +93,18 @@ def create_page_via_import(
     content: str,
     parent_page_id: str | None = None,
 ) -> dict[str, Any]:
-    """Create a page using the import endpoint (server-side MD→ProseMirror).
+    """Create a page through the current page endpoint.
 
-    Sends Markdown as a .md file via multipart upload. Available on both
-    Community and Enterprise editions.
-
-    Args:
-        client: Authenticated Docmost client.
-        space_id: Target space UUID.
-        title: Page title.
-        content: Markdown content.
-        parent_page_id: Parent page UUID (optional).
-
-    Returns:
-        Raw API response dict (should contain page ID).
+    Retains the historical helper name for callers that imported it directly.
+    New code should use :func:`create_page`.
     """
-    # Ensure content has the title as H1 if not already present
-    md_content = content
-    if md_content and not md_content.lstrip().startswith("#"):
-        md_content = f"# {title}\n\n{md_content}"
-    elif not md_content:
-        md_content = f"# {title}\n"
-
-    file_bytes = md_content.encode("utf-8")
-    files = {"file": (f"{title}.md", file_bytes, "text/markdown")}
-    data = build_body({"spaceId": space_id}, parentPageId=parent_page_id)
-
-    return client.post_multipart("/pages/import", data=data, files=files)
+    return create_page(
+        client,
+        space_id=space_id,
+        title=title,
+        content=content,
+        parent_page_id=parent_page_id,
+    )
 
 
 def update_page_meta(
@@ -181,10 +202,7 @@ def create_and_place_page(
     parent_page_id: str | None = None,
     icon: str | None = None,
 ) -> str:
-    """Create a page via import, then move to parent and set icon.
-
-    Combines the three-step create+move+icon workflow that the import
-    endpoint requires (it ignores parentPageId and icon).
+    """Create a page and return its UUID.
 
     Args:
         client: Authenticated Docmost client.
@@ -199,20 +217,15 @@ def create_and_place_page(
     """
     from docmost_cli.api.pagination import extract_id
 
-    result = create_page_via_import(client, space_id=space_id, title=title, content=content)
-    page_id = extract_id(result)
-
-    if parent_page_id:
-        move_page(
-            client,
-            page_id=page_id,
-            parent_page_id=parent_page_id,
-            position=POSITION_FIRST,
-        )
-    if icon:
-        update_page_meta(client, page_id=page_id, icon=icon)
-
-    return page_id
+    result = create_page(
+        client,
+        space_id=space_id,
+        title=title,
+        content=content,
+        parent_page_id=parent_page_id,
+        icon=icon,
+    )
+    return extract_id(result)
 
 
 def delete_page(client: DocmostClient, page_id: str) -> dict[str, Any]:
@@ -236,7 +249,7 @@ def move_page(
     page_id: str,
     parent_page_id: str | None = None,
     space_id: str | None = None,
-    position: str | int | None = None,
+    position: str | None = None,
 ) -> dict[str, Any]:
     """Move a page to a new location.
 
@@ -245,27 +258,33 @@ def move_page(
     Args:
         client: Authenticated Docmost client.
         page_id: Page UUID.
-        parent_page_id: New parent page UUID (omit for root).
+        parent_page_id: New parent page UUID, or None for the space root.
         space_id: Target space UUID (for cross-space moves).
         position: Position among siblings (fractional index string, 5-12 chars).
 
     Returns:
         Raw API response dict.
     """
-    body = build_body(
-        {"pageId": page_id},
-        parentPageId=parent_page_id,
-        spaceId=space_id,
-        position=position,
-    )
+    if space_id is not None:
+        client.post_raw(
+            "/pages/move-to-space",
+            json={"pageId": page_id, "spaceId": space_id},
+        )
+        if parent_page_id is None and position is None:
+            return {}
+
+    body = {
+        "pageId": page_id,
+        "parentPageId": parent_page_id,
+        "position": position or POSITION_FIRST,
+    }
     return client.post("/pages/move", json=body)
 
 
 def get_page_content(client: DocmostClient, page_id: str) -> dict[str, Any]:
     """Get page content and metadata.
 
-    Tries POST /pages/content (Enterprise v0.70+) first, then falls back
-    to POST /pages/info which may include content on both editions.
+    Docmost's page info endpoint includes the page's ProseMirror content.
 
     Args:
         client: Authenticated Docmost client.
@@ -274,30 +293,7 @@ def get_page_content(client: DocmostClient, page_id: str) -> dict[str, Any]:
     Returns:
         Dict with page metadata and content (ProseMirror JSON).
     """
-    # Get page info first (needed for metadata and fallback content)
-    info = get_page_info(client, page_id)
-
-    # Try Enterprise content endpoint (silently — may not exist on Community)
-    response = client.post_raw("/pages/content", json={"pageId": page_id}, raise_on_error=False)
-    if response.is_success:
-        try:
-            content_data = response.json()
-            data = content_data.get("data", content_data)
-            info["content"] = data.get("content", data)
-            return info
-        except (ValueError, KeyError):
-            pass
-
-    # Fall back to content from /pages/info (already fetched)
-    if "content" in info and info["content"]:
-        return info
-
-    print_error(
-        "Page content not available via REST on this instance. "
-        "This may require Enterprise edition (v0.70+). "
-        "Try 'docmost-cli page get <id> --raw' or access the page in the web UI.",
-        exit_code=1,
-    )
+    return get_page_info(client, page_id)
 
 
 def list_recent_pages(
@@ -346,7 +342,7 @@ def copy_page(client: DocmostClient, page_id: str, space_id: str) -> dict[str, A
     Returns:
         Raw API response dict (should contain new page ID).
     """
-    return client.post("/pages/copy", json={"pageId": page_id, "spaceId": space_id})
+    return client.post("/pages/duplicate", json={"pageId": page_id, "spaceId": space_id})
 
 
 def get_page_children(

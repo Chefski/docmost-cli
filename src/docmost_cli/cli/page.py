@@ -91,7 +91,7 @@ def page_create_cmd(
     parent: str | None = typer.Option(None, "--parent", help="Parent page ID"),
     icon: str | None = typer.Option(None, "--icon", help="Page icon emoji"),
 ) -> None:
-    """Create a new page via Markdown import.
+    """Create a new page from Markdown.
 
     See also: page move (reposition), page children (list children).
     """
@@ -168,7 +168,11 @@ def page_delete_cmd(
 @page_app.command("move")
 def page_move_cmd(
     page_id: str = typer.Argument(help="Page ID to move"),
-    parent: str | None = typer.Option(None, "--parent", help="New parent page ID"),
+    parent: str | None = typer.Option(
+        None,
+        "--parent",
+        help="New parent page ID (omit for root)",
+    ),
     space: str | None = typer.Option(None, "--space", help="Target space slug"),
     position: str | None = typer.Option(None, "--position", help="Position among siblings"),
 ) -> None:
@@ -233,7 +237,7 @@ def page_get_cmd(
     client = get_client()
 
     if raw:
-        # Raw mode: reuse get_page_content which handles Enterprise/Community fallback
+        # Raw mode: reuse the page info response so metadata and content stay in sync.
         info = get_page_content(client, page_id)
         pm_content = info.get("content")
         if not pm_content:

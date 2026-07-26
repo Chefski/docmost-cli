@@ -6,6 +6,7 @@
 - Preserve attachments in page export/import through native portable ZIP archives
 - Preserve attachment IDs and bytes during sync using local `files/<attachment-id>/...` assets and manifest hashes
 - Use Docmost's shared `/pages/update` content contract so page IDs and attachment ownership remain stable on Community and Enterprise editions
+- Match current Docmost page routes for creation, cross-space copy/move, root moves, and content retrieval
 
 ## 0.4.0 (2026-03-22)
 
