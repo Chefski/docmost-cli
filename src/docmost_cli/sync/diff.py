@@ -13,6 +13,7 @@ class ChangeType(enum.Enum):
 
     NEW = "new"
     CONTENT_CHANGED = "content_changed"
+    ATTACHMENT_CHANGED = "attachment_changed"
     TITLE_CHANGED = "title_changed"
     MOVED = "moved"
     ICON_CHANGED = "icon_changed"
@@ -47,7 +48,7 @@ class SyncDiff:
         return bool(self.new or self.modified or self.moved or self.deleted)
 
 
-def compute_diff(manifest: dict, dir_path: Path) -> SyncDiff:
+def compute_diff(manifest: dict[str, Any], dir_path: Path) -> SyncDiff:
     """Compute diff between local files and manifest.
 
     Algorithm:
@@ -68,11 +69,13 @@ def compute_diff(manifest: dict, dir_path: Path) -> SyncDiff:
     Returns:
         SyncDiff summarizing all changes.
     """
+    from docmost_cli.sync.assets import compute_file_hash
     from docmost_cli.sync.frontmatter import read_sync_file
     from docmost_cli.sync.manifest import compute_content_hash
 
     diff = SyncDiff()
     manifest_pages = manifest.get("pages", {})
+    manifest_assets = manifest.get("assets", {})
     seen_ids: set[str] = set()
 
     # Scan local .md files
@@ -114,6 +117,25 @@ def compute_diff(manifest: dict, dir_path: Path) -> SyncDiff:
             manifest_parent = manifest_entry.get("parent_id") or None
             if local_parent != manifest_parent:
                 changes.add(ChangeType.MOVED)
+
+            for attachment_id in manifest_entry.get("attachment_ids", []):
+                asset = manifest_assets.get(attachment_id, {})
+                relative_path = asset.get("path")
+                if not relative_path:
+                    changes.add(ChangeType.ATTACHMENT_CHANGED)
+                    break
+                asset_path = (dir_path / str(relative_path)).resolve()
+                try:
+                    asset_path.relative_to(dir_path.resolve())
+                except ValueError:
+                    changes.add(ChangeType.ATTACHMENT_CHANGED)
+                    break
+                if not asset_path.is_file():
+                    changes.add(ChangeType.ATTACHMENT_CHANGED)
+                    break
+                if compute_file_hash(asset_path) != asset.get("content_hash"):
+                    changes.add(ChangeType.ATTACHMENT_CHANGED)
+                    break
         else:
             # ID not in manifest -- treat as content-changed to trigger update
             changes.add(ChangeType.CONTENT_CHANGED)
@@ -135,6 +157,7 @@ def compute_diff(manifest: dict, dir_path: Path) -> SyncDiff:
         # If parent changed -> moved (can be both modified AND moved)
         if changes & {
             ChangeType.CONTENT_CHANGED,
+            ChangeType.ATTACHMENT_CHANGED,
             ChangeType.TITLE_CHANGED,
             ChangeType.ICON_CHANGED,
         }:

@@ -223,6 +223,69 @@ class TestPullCreatesFiles:
         assert "p2" in manifest["pages"]
 
 
+class TestPullAttachments:
+    def test_downloads_assets_and_rewrites_page_to_local_path(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        attachment_id = "019c0000-1111-7222-8333-444444444444"
+        pm_doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "image",
+                    "attrs": {
+                        "src": f"/api/files/{attachment_id}/diagram.png",
+                        "alt": "Architecture",
+                        "attachmentId": attachment_id,
+                    },
+                }
+            ],
+        }
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Page One",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        _mock_page_content(httpx_mock, "p1", "Page One", pm_doc)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/info",
+            json={
+                "id": attachment_id,
+                "fileName": "diagram.png",
+                "mimeType": "image/png",
+                "fileSize": 11,
+                "pageId": "p1",
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/{attachment_id}/diagram.png",
+            content=b"image-bytes",
+        )
+
+        with _make_client() as client:
+            result = pull_space(client, "test", target)
+
+        asset_path = target / "files" / attachment_id / "diagram.png"
+        assert result.attachments_pulled == 1
+        assert asset_path.read_bytes() == b"image-bytes"
+        page_content = next(target.glob("*.md")).read_text()
+        assert f"![Architecture](files/{attachment_id}/diagram.png)" in page_content
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text())
+        assert manifest["pages"]["p1"]["attachment_ids"] == [attachment_id]
+        assert manifest["assets"][attachment_id]["path"] == (f"files/{attachment_id}/diagram.png")
+
+
 class TestPullWritesCorrectFrontmatter:
     """Verify frontmatter has id, title, parent_id, icon."""
 

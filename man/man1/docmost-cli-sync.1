@@ -41,6 +41,7 @@ the target directory contains:
 engineering/
   Getting Started\-\-019a2a69.md
   API Reference\-\-019b3c8f.md
+  files/019c4d9a\-xxxx\-xxxx\-xxxx\-xxxxxxxxxxxx/diagram.png
   .docmost\-manifest.json
 .EE
 .RE
@@ -63,16 +64,12 @@ icon: null
 Page content here...
 .EE
 .RE
-.SS Edition\-aware content updates
-.TP
-.B Enterprise edition
-Direct content update via the REST API.
-The page ID is preserved.
-.TP
-.B Community edition
-Safe create\-then\-delete workflow: a new page is created and verified
-before the old page is removed.
-This ensures no data loss even if the operation is interrupted.
+.SS Attachment assets
+Referenced page attachments are downloaded beneath
+.IR files/ attachment\-id / filename
+and tracked by owner plus SHA\-256 hash in the manifest.
+Push uploads new local file/image links and replaces changed attachment bytes
+in place, preserving stable attachment and page IDs on both editions.
 .SH SUBCOMMANDS
 .SS pull
 Download all pages from a space to local Markdown files.

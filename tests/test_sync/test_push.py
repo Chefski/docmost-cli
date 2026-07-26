@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pages import try_update_page_content
 from docmost_cli.config.settings import DocmostSettings
+from docmost_cli.sync.assets import compute_file_hash
 from docmost_cli.sync.diff import PageChange
 from docmost_cli.sync.frontmatter import read_sync_file, write_sync_file
 from docmost_cli.sync.manifest import (
@@ -198,13 +199,13 @@ class TestTopologicalSort:
 # ---------------------------------------------------------------------------
 
 
-class TestTryEnterpriseUpdate:
+class TestTryContentUpdate:
     """Tests for try_update_page_content probing."""
 
     def test_success(self, httpx_mock) -> None:
-        """Returns True when Enterprise endpoint succeeds."""
+        """Returns True when the core page update endpoint succeeds."""
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/content/update",
+            url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
         )
         with _make_client() as client:
@@ -214,7 +215,7 @@ class TestTryEnterpriseUpdate:
     def test_failure_404(self, httpx_mock) -> None:
         """Returns False when endpoint returns 404."""
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/content/update",
+            url=f"{_TEST_URL}/api/pages/update",
             status_code=404,
         )
         with _make_client() as client:
@@ -446,12 +447,12 @@ class TestPushNewPage:
 
 
 # ---------------------------------------------------------------------------
-# push_space — content update (Enterprise)
+# push_space — content update
 # ---------------------------------------------------------------------------
 
 
-class TestPushContentUpdateEnterprise:
-    """push_space uses Enterprise endpoint when available."""
+class TestPushContentUpdate:
+    """push_space updates content in place through the core page endpoint."""
 
     def test_enterprise_content_update(self, httpx_mock, tmp_path: Path) -> None:
         old_body = "Old content.\n"
@@ -478,9 +479,8 @@ class TestPushContentUpdateEnterprise:
         )
 
         _mock_resolve_space(httpx_mock)
-        # Enterprise endpoint succeeds
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/content/update",
+            url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
         )
 
@@ -496,17 +496,16 @@ class TestPushContentUpdateEnterprise:
 
 
 # ---------------------------------------------------------------------------
-# push_space — content update (Community create-then-delete)
+# push_space — content update preserves IDs on Community too
 # ---------------------------------------------------------------------------
 
 
 class TestPushContentUpdateCommunity:
-    """push_space falls back to create-then-delete on Community edition."""
+    """The shared core endpoint avoids destructive Community page replacement."""
 
     def test_community_fallback(self, httpx_mock, tmp_path: Path) -> None:
         old_body = "Old content.\n"
         new_body = "Updated content.\n"
-        new_page_id = "replacement-page-id"
 
         target = _setup_synced_dir(
             tmp_path,
@@ -529,36 +528,97 @@ class TestPushContentUpdateCommunity:
         )
 
         _mock_resolve_space(httpx_mock)
-        # Enterprise endpoint returns 404
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/content/update",
-            status_code=404,
-        )
-        # Community fallback: create via import
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
-            json={"id": new_page_id},
-        )
-        # delete old page
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/delete",
-            json={"data": {}},
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
         )
 
         with _make_client() as client:
             result = push_space(client, "eng", target)
 
         assert result.updated == 1
-        assert result.id_remaps == {FAKE_PAGE_ID: new_page_id}
+        assert result.id_remaps == {}
 
-        # Verify file frontmatter has new ID
+        # Frontmatter and manifest retain the stable page ID.
         meta, _ = read_sync_file(target / "my-page.md")
-        assert meta["id"] == new_page_id
+        assert meta["id"] == FAKE_PAGE_ID
 
-        # Old ID should be gone from manifest, new ID present
         manifest = load_manifest(target)
-        assert FAKE_PAGE_ID not in manifest["pages"]
-        assert new_page_id in manifest["pages"]
+        assert FAKE_PAGE_ID in manifest["pages"]
+
+
+class TestPushAttachmentUpdate:
+    def test_changed_asset_reuses_attachment_id_and_updates_page_reference(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        attachment_id = "019c0000-1111-7222-8333-444444444444"
+        relative_path = f"files/{attachment_id}/diagram.png"
+        body = f"![Architecture]({relative_path})\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="my-page.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(body),
+                    attachment_ids=[attachment_id],
+                )
+            },
+        )
+        _write_page(
+            target,
+            "my-page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body=body,
+        )
+        asset = target / relative_path
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"new-image-bytes")
+        manifest = load_manifest(target)
+        manifest["assets"] = {
+            attachment_id: {
+                "file_name": "diagram.png",
+                "path": relative_path,
+                "mime_type": "image/png",
+                "size": 3,
+                "page_id": FAKE_PAGE_ID,
+                "content_hash": "sha256:old",
+                "server_path": f"/api/files/{attachment_id}/diagram.png",
+            }
+        }
+        save_manifest(target, manifest)
+
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/upload",
+            json={
+                "id": attachment_id,
+                "fileName": "diagram.png",
+                "mimeType": "image/png",
+                "fileSize": asset.stat().st_size,
+                "pageId": FAKE_PAGE_ID,
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"id": FAKE_PAGE_ID},
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target)
+
+        assert result.updated == 1
+        upload_body = httpx_mock.get_requests()[1].read()
+        assert attachment_id.encode() in upload_body
+        update_payload = json.loads(httpx_mock.get_requests()[2].content)
+        assert f'data-attachment-id="{attachment_id}"' in update_payload["content"]
+        updated_manifest = load_manifest(target)
+        assert updated_manifest["assets"][attachment_id]["content_hash"] == compute_file_hash(asset)
 
 
 # ---------------------------------------------------------------------------
@@ -747,7 +807,6 @@ class TestPushDryRun:
                     "/pages/delete",
                     "/pages/move",
                     "/pages/update",
-                    "/pages/content/update",
                 ]
             )
         ]

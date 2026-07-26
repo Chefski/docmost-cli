@@ -11,7 +11,7 @@ from docmost_cli.output.formatter import print_result, print_table
 
 __all__ = ["comment_app"]
 
-comment_app = typer.Typer(name="comment", help="Comment operations.")
+comment_app: typer.Typer = typer.Typer(name="comment", help="Comment operations.")
 
 
 def _extract_text_from_prosemirror(doc: dict[str, Any]) -> str:

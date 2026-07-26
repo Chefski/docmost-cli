@@ -188,9 +188,11 @@ docmost-cli page history <page-id>                # Show page version history
 docmost-cli page export <page-id>                 # Export page
   --format md|html                            # Output format (default: md)
   --output path/to/file                       # Write to file instead of stdout
+  --include-attachments                       # Portable ZIP containing referenced assets
+  --include-children                          # Include descendants in the portable ZIP
 
 docmost-cli page import <space-slug>              # Import content as new page
-  --file path/to/file.md                      # Markdown file to import
+  --file path/to/file.md|html|zip             # ZIP imports preserve attachment assets
   --title "Page Title"                        # Override title (else from filename/H1)
   --parent <page-id>                          # Nest under parent
 ```
@@ -242,6 +244,15 @@ docmost-cli search <query>                        # Full-text search
 ```
 docmost-cli attachment search <query>             # Search attachments
   --space <space-slug>
+docmost-cli attachment upload <page-id>            # Upload and insert a page asset
+  --file path                                 # File/image to upload
+  --replace <attachment-id>                   # Replace bytes while preserving ID/URL
+  --no-insert                                 # Upload without appending a content block
+  --json                                      # Return full metadata and stable URL
+docmost-cli attachment info <attachment-id>        # Show metadata and stable URL
+  --json
+docmost-cli attachment download <attachment-id>    # Download by stable ID
+  --output path
 ```
 
 ### 4.8 `docmost-cli workspace`
@@ -273,11 +284,13 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
 **Local directory format:**
 - Flat directory with `.docmost-manifest.json` tracking sync state
 - Each page is `{title}--{id_prefix}.md` with YAML frontmatter (`id`, `title`, `parent_id`, `icon`)
+- Referenced assets are stored as `files/{attachment_id}/{filename}` and tracked by hash/owner
 - Change detection via SHA-256 content hash (not timestamps)
 
-**Edition-aware content updates:**
-- Enterprise: direct content update via REST (preserves page ID)
-- Community: safe create-then-delete (new page created and verified before old page removed)
+**Stable content and asset updates:**
+- Both editions use `POST /pages/update` with `operation: replace`, preserving page IDs
+- New local file/image links are uploaded to the owning page before its content is updated
+- Changed attachment bytes use `/files/upload` with the existing attachment ID, preserving URLs
 
 ---
 
@@ -374,9 +387,9 @@ POST /auth/logout
 
 **Pages:**
 ```
-POST /pages/info          → {pageId} → page metadata
+POST /pages/info          → {pageId, format?} → page metadata/content
 POST /pages/create        → {title, spaceId, parentPageId?, icon?, content?}
-POST /pages/update        → {pageId, title?, icon?}
+POST /pages/update        → {pageId, title?, icon?, content?, format?, operation?}
 POST /pages/delete        → {pageId}
 POST /pages/move          → {pageId, parentPageId?, position?, spaceId?}
 POST /pages/duplicate     → {pageId}
@@ -386,18 +399,12 @@ POST /pages/recent        → {spaceId, limit?, cursor?}
 POST /pages/children      → {pageId, limit?, cursor?}
 POST /pages/history       → {pageId, limit?, cursor?}
 POST /pages/import        → multipart: file (md/html), spaceId, parentPageId?
-POST /pages/export         → {pageId, format: "md"|"html"}
+POST /pages/import-zip    → multipart: file (zip), spaceId, source="generic"
+POST /pages/export        → {pageId, format, includeAttachments?, includeChildren?}
 ```
 
-**Page Content (Enterprise only, v0.70+):**
-```
-POST /pages/content       → {pageId} → ProseMirror JSON content
-POST /pages/content/update → {pageId, content (markdown/html), format}
-```
-> These endpoints may not be available on Community edition. The CLI attempts
-> them and falls back with a clear error suggesting delete+recreate workflow.
-> On Community edition, content updates may require WebSocket (Hocuspocus/Y.js)
-> which is deferred to a future phase.
+Page content replacement/appending is part of the shared `/pages/update` contract.
+The required fields are `content`, `format`, and `operation` (`replace`, `append`, or `prepend`).
 
 **Spaces:**
 ```
@@ -424,7 +431,9 @@ POST /search              → {query, spaceId?, type?, limit?, cursor?}
 **Attachments:**
 ```
 POST /attachments/search  → {query, spaceId?}
-GET  /attachments/...     → file download
+POST /files/upload        → multipart: file, pageId, attachmentId? (stable replacement)
+POST /files/info          → {attachmentId}
+GET  /files/{id}/{name}   → authenticated file download
 ```
 
 **Workspace:**
@@ -513,23 +522,16 @@ This is the critical path for `page get`. The converter must handle all Docmost 
 
 For `page create` and `page update`. Two strategies available:
 
-1. **Preferred: Use Docmost's import endpoint** (`POST /pages/import`)
-   — Send Markdown as a file, let Docmost's server do the conversion.
-   This guarantees compatibility with all Docmost features.
+1. **Create pages through Docmost's import endpoint** (`POST /pages/import`)
+   — Send Markdown as a file and let Docmost perform the initial conversion.
 
-2. **Fallback: Client-side conversion** — Parse Markdown into ProseMirror JSON
-   using `markdown-it` style parsing. Only needed if the import endpoint is
-   unavailable or insufficient (e.g., for partial content updates).
+2. **Update existing pages through the shared page endpoint**
+   (`POST /pages/update`) with `format: "markdown"`, the page content, and an
+   `operation` of `replace`, `append`, or `prepend`. This path is available on
+   both Community and Enterprise editions and preserves the page ID.
 
-> **Implementation guidance**: Start with strategy 1 (import endpoint) for creating pages.
-> For updates, use `POST /pages/content/update` if available (Enterprise v0.70+),
-> which accepts Markdown directly. Build client-side MD→ProseMirror only if these
-> server-side approaches prove insufficient.
->
-> **Edition note**: The import endpoint (`POST /pages/import`) is the reliable
-> cross-edition path for creating pages with Markdown content. Content updates
-> via `POST /pages/content/update` may only be available on Enterprise edition.
-> On Community edition, content replacement requires delete+recreate via import.
+The local converter is still used by sync to inspect and rewrite attachment
+references, but the server remains responsible for storing page content.
 
 ---
 
@@ -645,19 +647,23 @@ def print_content(content: str) -> None:
     """Print content (Markdown) directly to stdout."""
     sys.stdout.write(content)
 
+
 # Metadata-enriched content — frontmatter + content to stdout
 def print_content_with_meta(content: str, meta: dict) -> None:
     """Print YAML frontmatter + Markdown content to stdout."""
 
+
 # List output — table (default) or JSON (--json) to stdout
 def print_table(rows: list[dict], columns: list[str], json_mode: bool) -> None:
     """Print as rich table or JSON array depending on mode."""
+
 
 # Write result — ID to stdout, message to stderr
 def print_result(resource_id: str, message: str) -> None:
     """Print resource ID to stdout, confirmation to stderr."""
     sys.stdout.write(resource_id + "\n")
     sys.stderr.write(message + "\n")
+
 
 # Error — message to stderr, set exit code
 def print_error(message: str, exit_code: int = 1) -> NoReturn:
@@ -681,11 +687,10 @@ def print_error(message: str, exit_code: int = 1) -> NoReturn:
 - [x] Basic error handling with exit codes
 
 ### Phase 2: Write Operations
-> **Edition-aware**: All write operations use frontend-internal endpoints (both editions).
-> `page update --content` gracefully degrades on Community edition with a clear error
-> message suggesting the delete+recreate workflow.
+> **Edition-aware**: All write operations use endpoints shared by both editions.
+> Content updates use `POST /pages/update`, preserving page and attachment IDs.
 - [x] `docmost-cli page create` (via import endpoint — both editions)
-- [x] `docmost-cli page update` (title: both editions; content: Enterprise only, graceful fallback)
+- [x] `docmost-cli page update` (title and content: both editions)
 - [x] `docmost-cli page delete` (with confirmation — both editions)
 - [x] `docmost-cli page move` (both editions)
 - [x] `docmost-cli space list` / `space create` / `space update` (both editions)
@@ -834,25 +839,25 @@ These items need investigation during implementation. Update this section as ans
 > degrades gracefully with clear error messages if unavailable. This avoids blocking
 > implementation on answers that can only come from live testing.
 
-- [ ] **Content update endpoint**: Does `POST /pages/content/update` accept raw
-      Markdown on Community edition, or is it Enterprise-only? If Community-only
-      has no content update, the import-delete-recreate workaround may be needed.
-      *Current approach*: Try REST endpoint; on failure, show edition-aware error.
+- [x] **Content update endpoint**: `POST /pages/update` accepts Markdown with an
+      explicit `operation` (`replace`, `append`, or `prepend`) on Community and
+      Enterprise editions. Sync uses this endpoint so page IDs remain stable.
 - [ ] **OpenAPI spec**: Is there a downloadable OpenAPI/Swagger JSON at
       `https://instance/api-docs/openapi.json` or similar? This would allow
       auto-generating type stubs.
-- [ ] **WebSocket for content updates**: The MrMartiniMo MCP server uses WebSocket
-      (Hocuspocus/Y.js collaboration protocol) for content updates. Determine if
-      the REST endpoint is sufficient or if WebSocket is required for content changes.
-      *Current approach*: REST-first; WebSocket deferred to future phase.
+- [x] **Content transport**: The shared REST page-update endpoint is sufficient for
+      CLI content replacement, append, and prepend operations; WebSocket is not
+      required for this workflow.
 - [ ] **Rate limiting**: Does Docmost implement rate limiting? If so, what are the limits?
-- [ ] **Attachment upload**: Is there an API endpoint for uploading attachments, or
-      is it only available through the editor UI?
+- [x] **Attachment upload**: `POST /files/upload` accepts multipart `file` and
+      `pageId` fields. Supplying `attachmentId` replaces same-extension bytes in
+      place, preserving the ID and URL.
 - [x] **Space slug vs ID**: Some endpoints accept slug, others require ID.
       *Resolved*: `resolve_space_id()` helper in `api/spaces.py` calls
       `POST /spaces/info` with `{spaceSlug: slug}` and returns the ID.
 - [ ] **Comment content format**: Does the comment API accept plain text or require
       ProseMirror JSON? *Current approach*: Send content as provided; wrap in
       minimal ProseMirror JSON if API rejects plain text.
-- [ ] **Import endpoint field names**: Verify exact multipart field names for
-      `POST /pages/import` (e.g., `file` vs `uploadFile`, `spaceId` field name).
+- [x] **Import endpoint fields**: `POST /pages/import` uses multipart `file` and
+      `spaceId`; `POST /pages/import-zip` additionally requires `source=generic`
+      for portable Docmost ZIP archives.

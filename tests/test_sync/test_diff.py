@@ -879,11 +879,12 @@ class TestChangeType:
         """All expected change types exist."""
         assert ChangeType.NEW.value == "new"
         assert ChangeType.CONTENT_CHANGED.value == "content_changed"
+        assert ChangeType.ATTACHMENT_CHANGED.value == "attachment_changed"
         assert ChangeType.TITLE_CHANGED.value == "title_changed"
         assert ChangeType.MOVED.value == "moved"
         assert ChangeType.ICON_CHANGED.value == "icon_changed"
         assert ChangeType.DELETED.value == "deleted"
 
     def test_enum_count(self) -> None:
-        """Exactly 6 change types."""
-        assert len(ChangeType) == 6
+        """Exactly 7 change types."""
+        assert len(ChangeType) == 7

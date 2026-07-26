@@ -9,6 +9,23 @@ docmost\-cli\-attachment \- attachment operations for Docmost wiki
 .RB [ \-\-space
 .IR slug ]
 .RB [ \-\-json ]
+.br
+.B docmost\-cli attachment upload
+.I page\-id
+.BI \-\-file " path"
+.RB [ \-\-replace
+.IR attachment\-id ]
+.RB [ \-\-no\-insert ]
+.RB [ \-\-json ]
+.br
+.B docmost\-cli attachment info
+.I attachment\-id
+.RB [ \-\-json ]
+.br
+.B docmost\-cli attachment download
+.I attachment\-id
+.RB [ \-\-output
+.IR path ]
 .SH DESCRIPTION
 Commands for working with file attachments in a Docmost wiki.
 .SH SUBCOMMANDS
@@ -25,6 +42,31 @@ Restrict search to attachments in a specific space.
 Output as a JSON array instead of a Rich table.
 .PP
 Table columns: id, fileName, type.
+.SS upload
+Upload a file or image owned by
+.I page\-id
+and append it to the page content.
+The stable attachment ID is written to stdout.
+.TP
+.BI \-\-file " path"
+Local file to upload.
+.TP
+.BI \-\-replace " attachment\-id"
+Replace an existing attachment's bytes while preserving its ID and URL.
+The replacement must use the same file extension.
+.TP
+.B \-\-no\-insert
+Create the attachment without appending a new content block.
+.TP
+.B \-\-json
+Return the full attachment record including stable ID and authenticated URL.
+.SS info
+Show metadata and the stable authenticated URL for an attachment ID.
+.SS download
+Download an attachment by ID.
+.TP
+.BI \-\-output " path"
+Destination file or directory.
 .SH EXAMPLES
 Search for attachments:
 .PP

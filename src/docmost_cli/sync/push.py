@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from docmost_cli.output.formatter import _err_console as _err
-from docmost_cli.sync.diff import ChangeType, SyncDiff
+from docmost_cli.sync.diff import ChangeType, PageChange, SyncDiff
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -55,11 +55,12 @@ def push_space(
         create_and_place_page,
         delete_page,
         move_page,
-        try_update_page_content,
+        update_page_content,
         update_page_meta,
     )
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.output.formatter import print_error
+    from docmost_cli.sync.assets import prepare_markdown_assets
     from docmost_cli.sync.diff import compute_diff
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
@@ -92,8 +93,8 @@ def push_space(
 
     # --- Execute changes ---
 
-    enterprise: bool | None = None  # Cached edition detection
     id_remap: dict[str, str] = {}  # old_id -> new_id
+    manifest.setdefault("assets", {})
 
     # Phase A: Create new pages (topological order)
     existing_ids = set(manifest.get("pages", {}).keys())
@@ -120,6 +121,21 @@ def push_space(
             icon=icon,
         )
 
+        try:
+            server_body, asset_entries, attachment_ids = prepare_markdown_assets(
+                client,
+                page_id=new_id,
+                markdown=body,
+                dir_path=dir_path,
+                manifest=manifest,
+            )
+        except FileNotFoundError as exc:
+            print_error(f"Attachment file not found: {exc.filename or exc}")
+
+        if attachment_ids:
+            update_page_content(client, page_id=new_id, content=server_body)
+            manifest["assets"].update(asset_entries)
+
         # Write ID back to frontmatter
         meta["id"] = new_id
         write_sync_file(dir_path / change.filename, meta, body)
@@ -132,6 +148,7 @@ def push_space(
             parent_id=parent_id,
             icon=icon,
             content_hash=content_hash,
+            attachment_ids=attachment_ids,
         )
         existing_ids.add(new_id)
         result.created += 1
@@ -145,40 +162,31 @@ def push_space(
         parent_id = meta.get("parent_id", "").strip() or None
         icon = meta.get("icon", "").strip()
 
-        has_content_change = ChangeType.CONTENT_CHANGED in change.changes
+        has_content_change = bool(
+            change.changes & {ChangeType.CONTENT_CHANGED, ChangeType.ATTACHMENT_CHANGED}
+        )
         has_meta_change = bool(change.changes & {ChangeType.TITLE_CHANGED, ChangeType.ICON_CHANGED})
 
         # Content update
         if has_content_change:
-            if enterprise is None:
-                # First attempt: probe and update in one call
-                enterprise = try_update_page_content(client, page_id=page_id, content=body)
-                if enterprise:
-                    _err.print(f"  Updated (Enterprise): {title}")
-            elif enterprise:
-                try_update_page_content(client, page_id=page_id, content=body)
-                _err.print(f"  Updated: {title}")
-
-            if not enterprise:
-                # Community: safe create-then-delete
-                _err.print(f"  Replacing: {title}")
-                new_id = _community_replace(
+            try:
+                server_body, asset_entries, attachment_ids = prepare_markdown_assets(
                     client,
-                    space_id=space_id,
-                    old_page_id=page_id,
-                    title=title,
-                    content=body,
-                    parent_id=parent_id,
-                    icon=icon,
+                    page_id=page_id,
+                    markdown=body,
+                    dir_path=dir_path,
+                    manifest=manifest,
                 )
-                id_remap[page_id] = new_id
-                meta["id"] = new_id
-                write_sync_file(dir_path / change.filename, meta, body)
-                manifest["pages"].pop(page_id, None)
-                page_id = new_id
+            except FileNotFoundError as exc:
+                print_error(f"Attachment file not found: {exc.filename or exc}")
+            update_page_content(client, page_id=page_id, content=server_body)
+            manifest["assets"].update(asset_entries)
+            _err.print(f"  Updated: {title}")
+        else:
+            attachment_ids = list((change.manifest_entry or {}).get("attachment_ids", []))
 
-        # Meta update (title/icon) — skip if community update already recreated the page
-        if has_meta_change and not (has_content_change and not enterprise):
+        # Metadata changes use the same core page update endpoint.
+        if has_meta_change:
             _err.print(f"  Metadata: {title}")
             update_page_meta(
                 client,
@@ -195,6 +203,7 @@ def push_space(
             parent_id=parent_id,
             icon=icon,
             content_hash=content_hash,
+            attachment_ids=attachment_ids,
         )
         result.updated += 1
 
@@ -243,13 +252,8 @@ def push_space(
                 "Use --delete to remove.[/yellow]"
             )
 
-    # Save ID remaps
+    # Legacy field retained in the result contract; core page updates preserve IDs.
     result.id_remaps = id_remap
-    if id_remap:
-        _err.print(
-            f"[yellow]Community edition: {len(id_remap)} page(s) got new IDs. "
-            "Internal wiki links may need updating.[/yellow]"
-        )
 
     # Save manifest
     save_manifest(dir_path, manifest)
@@ -293,7 +297,10 @@ def _community_replace(
     return new_id
 
 
-def _topological_sort(new_changes: list, existing_ids: set[str]) -> list:
+def _topological_sort(
+    new_changes: list[PageChange],
+    existing_ids: set[str],
+) -> list[PageChange]:
     """Sort new pages so parents are created before children.
 
     Pages with no parent or whose parent already exists on the server

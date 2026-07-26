@@ -11,7 +11,8 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
-from typing import Any
+from typing import Any, cast
+from urllib.parse import quote
 
 import httpx
 
@@ -42,7 +43,7 @@ class DocmostClient:
             )
 
         self._settings = settings
-        self._base_url = settings.url.rstrip("/")  # type: ignore[union-attr]
+        self._base_url = settings.url.rstrip("/")
         self._auth: AuthStrategy = create_auth(settings)
         self._http = httpx.Client(timeout=30.0)
         self._verbose = verbose
@@ -165,10 +166,10 @@ class DocmostClient:
         Returns:
             Parsed JSON response body.
         """
-        url = f"{self._base_url}/api{path}"
+        url = self.api_url(path)
         request = self._http.build_request(method, url, **kwargs)
         response = self._send_with_retry(request)
-        return response.json()
+        return cast("dict[str, Any]", response.json())
 
     def post(self, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
         """Convenience method for POST requests.
@@ -200,10 +201,10 @@ class DocmostClient:
         Returns:
             Parsed JSON response body.
         """
-        url = f"{self._base_url}/api{path}"
+        url = self.api_url(path)
         request = self._http.build_request("POST", url, data=data, files=files)
         response = self._send_with_retry(request)
-        return response.json()
+        return cast("dict[str, Any]", response.json())
 
     def post_raw(
         self, path: str, json: dict[str, Any] | None = None, *, raise_on_error: bool = True
@@ -217,7 +218,7 @@ class DocmostClient:
             json: JSON body to send.
             raise_on_error: If False, skip error handling (for endpoint probes).
         """
-        url = f"{self._base_url}/api{path}"
+        url = self.api_url(path)
         request = self._http.build_request("POST", url, json=json)
         self._auth.apply(request)
         try:
@@ -229,6 +230,36 @@ class DocmostClient:
         if raise_on_error:
             self._handle_error(response)
         return response
+
+    def get_raw(self, path: str, *, raise_on_error: bool = True) -> httpx.Response:
+        """GET a binary/non-JSON resource with authentication.
+
+        Args:
+            path: API path relative to ``/api``.
+            raise_on_error: Whether to translate unsuccessful responses into CLI errors.
+
+        Returns:
+            The raw HTTP response.
+        """
+        request = self._http.build_request("GET", self.api_url(path))
+        if raise_on_error:
+            return self._send_with_retry(request)
+
+        self._auth.apply(request)
+        try:
+            return self._http.send(request)
+        except httpx.HTTPError:
+            return httpx.Response(status_code=0)
+
+    def api_url(self, path: str) -> str:
+        """Build an absolute URL for an API path."""
+        normalized = path if path.startswith("/") else f"/{path}"
+        return f"{self._base_url}/api{normalized}"
+
+    def attachment_url(self, attachment_id: str, file_name: str) -> str:
+        """Build the stable authenticated URL for an attachment."""
+        encoded_name = quote(file_name, safe="")
+        return self.api_url(f"/files/{attachment_id}/{encoded_name}")
 
     def get(self, path: str, **kwargs: Any) -> dict[str, Any]:
         """Convenience method for GET requests.

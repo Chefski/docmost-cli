@@ -5,14 +5,15 @@ and auto-following pagination cursors.
 """
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, cast
 
 __all__ = ["build_body", "extract_id", "extract_items", "get_cursor", "paginate_all"]
 
 
 def extract_id(response: dict[str, Any]) -> str:
     """Extract resource ID from API response, handling nested shapes."""
-    return response.get("id") or response.get("data", {}).get("id", "")
+    resource_id = response.get("id") or response.get("data", {}).get("id", "")
+    return str(resource_id) if resource_id else ""
 
 
 def build_body(required: dict[str, Any], **optional: Any) -> dict[str, Any]:
@@ -36,10 +37,12 @@ def extract_items(response: dict[str, Any]) -> list[dict[str, Any]]:
         List of item dicts.
     """
     if "data" in response and isinstance(response["data"], dict):
-        return response["data"].get("items", [])
+        items = response["data"].get("items", [])
+        return cast("list[dict[str, Any]]", items) if isinstance(items, list) else []
     if "data" in response and isinstance(response["data"], list):
-        return response["data"]
-    return response.get("items", [response] if "id" in response else [])
+        return cast("list[dict[str, Any]]", response["data"])
+    items = response.get("items", [response] if "id" in response else [])
+    return cast("list[dict[str, Any]]", items) if isinstance(items, list) else []
 
 
 def get_cursor(response: dict[str, Any]) -> str | None:

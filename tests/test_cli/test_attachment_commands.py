@@ -1,10 +1,60 @@
 """Tests for attachment CLI commands."""
 
+import json
+
 from typer.testing import CliRunner
 
 from docmost_cli.cli.main import app
 
 runner = CliRunner()
+
+
+class TestAttachmentUpload:
+    def test_upload_inserts_image_and_returns_url_json(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+    ) -> None:
+        image = tmp_path / "diagram.png"
+        image.write_bytes(b"image")
+        attachment_id = "019c0000-1111-7222-8333-444444444444"
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/files/upload",
+            json={
+                "id": attachment_id,
+                "fileName": "diagram.png",
+                "mimeType": "image/png",
+                "fileSize": 5,
+                "pageId": "page-1",
+            },
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/update",
+            json={"id": "page-1"},
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "attachment",
+                "upload",
+                "page-1",
+                "--file",
+                str(image),
+                "--json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        output = json.loads(result.stdout)
+        assert output["id"] == attachment_id
+        assert output["url"].endswith(f"/{attachment_id}/diagram.png")
+        update = json.loads(httpx_mock.get_requests()[1].content)
+        assert update["operation"] == "append"
+        assert 'data-attachment-id="019c0000-1111-7222-8333-444444444444"' in update["content"]
 
 
 class TestAttachmentSearch:
