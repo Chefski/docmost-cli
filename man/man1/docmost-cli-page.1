@@ -307,12 +307,14 @@ ZIP imports preserve attachment assets and return the asynchronous file-task ID.
 Required.
 .TP
 .BI \-\-title " title"
-Override the page title.
+Override the page title after import.
 If omitted, the title is auto\-detected from the filename or
 the first H1 heading in the file.
 .TP
 .BI \-\-parent " id"
-Parent page UUID to nest the imported page under.
+Parent page UUID to move the imported page under after import.
+.PP
+Title and parent overrides are not supported for portable ZIP imports.
 .PP
 Outputs the new page ID to stdout.
 .SH EXAMPLES

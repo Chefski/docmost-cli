@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
+
+import pytest
 
 from docmost_cli.api.attachments import (
     download_attachment,
@@ -107,39 +110,55 @@ class TestAttachmentFiles:
 class TestSearchAttachments:
     def test_returns_results(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/attachments/search",
+            url="https://docs.example.com/api/search-attachments",
             json={
-                "data": {
-                    "items": [
-                        {"id": "att-1", "fileName": "diagram.png", "type": "image/png"},
-                        {"id": "att-2", "fileName": "report.pdf", "type": "application/pdf"},
-                    ]
-                }
+                "items": [
+                    {
+                        "id": "att-1",
+                        "fileName": "diagram.png",
+                        "highlight": "architecture diagram",
+                    },
+                    {"id": "att-2", "fileName": "report.pdf", "highlight": "diagram"},
+                ]
             },
         )
         with DocmostClient(api_key_settings) as client:
             result = search_attachments(client, "diagram")
-        items = result["data"]["items"]
+        items = result["items"]
         assert len(items) == 2
         assert items[0]["fileName"] == "diagram.png"
 
     def test_with_space_id_filter(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/attachments/search",
+            url="https://docs.example.com/api/search-attachments",
             json={
-                "data": {
-                    "items": [
-                        {"id": "att-3", "fileName": "logo.svg", "type": "image/svg+xml"},
-                    ]
-                }
+                "items": [
+                    {"id": "att-3", "fileName": "logo.svg", "highlight": "company logo"},
+                ]
             },
         )
         with DocmostClient(api_key_settings) as client:
             result = search_attachments(client, "logo", space_id="space-abc")
         request = httpx_mock.get_requests()[0]
-        body = request.read()
-        assert b"spaceId" in body
-        assert b"space-abc" in body
-        items = result["data"]["items"]
+        body = json.loads(request.content)
+        assert body == {"query": "logo", "spaceId": "space-abc"}
+        items = result["items"]
         assert len(items) == 1
         assert items[0]["id"] == "att-3"
+
+    def test_unavailable_feature_has_actionable_error(
+        self, httpx_mock, api_key_settings, capsys
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/search-attachments",
+            status_code=404,
+        )
+
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            search_attachments(client, "diagram")
+
+        assert exc_info.value.code == 4
+        assert "Enterprise attachment-indexing feature" in capsys.readouterr().err

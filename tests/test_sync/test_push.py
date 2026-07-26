@@ -423,9 +423,7 @@ class TestPushNewPage:
         assert result.created == 1
         assert result.unchanged == 1  # parent is unchanged
         create_request = next(
-            request
-            for request in httpx_mock.get_requests()
-            if "/pages/create" in str(request.url)
+            request for request in httpx_mock.get_requests() if "/pages/create" in str(request.url)
         )
         create_body = json.loads(create_request.content)
         assert create_body["parentPageId"] == parent_id

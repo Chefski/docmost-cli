@@ -9,24 +9,22 @@ class TestSearch:
         httpx_mock.add_response(
             url="https://docs.example.com/api/search",
             json={
-                "data": {
-                    "items": [
-                        {"id": "p1", "title": "Result Page", "highlight": "matched text"},
-                    ]
-                }
+                "items": [
+                    {"id": "p1", "title": "Result Page", "highlight": "matched text"},
+                ]
             },
         )
         with DocmostClient(api_key_settings) as client:
             result = search(client, "test query")
-        assert result["data"]["items"][0]["title"] == "Result Page"
+        assert result["items"][0]["title"] == "Result Page"
 
-    def test_search_with_filters(self, httpx_mock, api_key_settings) -> None:
+    def test_search_with_supported_filters(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/search",
-            json={"data": {"items": []}},
+            json={"items": []},
         )
         with DocmostClient(api_key_settings) as client:
-            search(client, "query", space_id="s1", result_type="page", limit=5)
+            search(client, "query", space_id="s1", limit=5, offset=10)
 
         import json
 
@@ -34,5 +32,7 @@ class TestSearch:
         body = json.loads(request.content)
         assert body["query"] == "query"
         assert body["spaceId"] == "s1"
-        assert body["type"] == "page"
         assert body["limit"] == 5
+        assert body["offset"] == 10
+        assert "type" not in body
+        assert "cursor" not in body

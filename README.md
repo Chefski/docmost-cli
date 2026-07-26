@@ -91,7 +91,7 @@ docmost-cli page create <space-slug> --title "My Page" --file content.md
 | `docmost-cli comment list <page-id>` | List comments on a page (`--json`) |
 | `docmost-cli comment create <page-id>` | Add a comment (`--content`) |
 | `docmost-cli comment update <comment-id>` | Edit a comment (`--content`) |
-| `docmost-cli search <query>` | Full-text search (`--space`, `--limit`, `--json`) |
+| `docmost-cli search query <query>` | Full-text page search (`--space`, `--limit`, `--offset`, `--json`) |
 | `docmost-cli attachment search <query>` | Search attachments (`--space`) |
 | `docmost-cli attachment upload <page-id>` | Upload and insert a file/image (`--file`, `--replace`, `--json`) |
 | `docmost-cli attachment info <attachment-id>` | Show metadata and stable authenticated URL |

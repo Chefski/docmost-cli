@@ -273,8 +273,169 @@ class TestMutationSafeRetries:
         assert exc_info.value.code == 1
         assert len(httpx_mock.get_requests()) == 4
 
+    def test_one_shot_stream_body_disables_automatic_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+        capsys,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+        chunks = (chunk for chunk in (b"complete ", b"body"))
+
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request("PUT", "/pages/raw", content=chunks)
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert requests[0].content == b"complete body"
+        error = " ".join(capsys.readouterr().err.split())
+        assert "not retried automatically" in error
+        assert "verify server state" in error
+
+    def test_wrapped_one_shot_stream_disables_automatic_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+        source = iter((b"complete ", b"body"))
+
+        class WrappedStream:
+            def __iter__(self):
+                yield from source
+
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request("PUT", "/pages/raw", content=WrappedStream())
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert requests[0].content == b"complete body"
+
+    def test_byte_chunk_list_retries_complete_body(
+        self,
+        httpx_mock,
+        api_key_settings,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+        httpx_mock.add_response(url=url, json={"status": "ok"})
+
+        with DocmostClient(api_key_settings) as client:
+            result = client.request(
+                "PUT",
+                "/pages/raw",
+                content=[b"complete ", b"body"],
+            )
+
+        requests = httpx_mock.get_requests()
+        assert result == {"status": "ok"}
+        assert len(requests) == 2
+        assert requests[0].content == requests[1].content == b"complete body"
+
+    def test_legacy_one_shot_data_disables_automatic_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+        chunks = (chunk for chunk in (b"complete ", b"body"))
+
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request("PUT", "/pages/raw", data=chunks)
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert requests[0].content == b"complete body"
+
+    def test_sequence_multipart_stream_disables_automatic_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+
+        class NonSeekableFile:
+            def __init__(self) -> None:
+                self._stream = io.BytesIO(b"complete body")
+
+            def read(self, size: int = -1) -> bytes:
+                return self._stream.read(size)
+
+        files = [("file", ("report.txt", NonSeekableFile(), "text/plain"))]
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request("PUT", "/pages/raw", files=files)
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert b"complete body" in requests[0].content
+
+    def test_current_offset_only_multipart_stream_disables_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+
+        class CurrentOffsetOnlyFile:
+            def __init__(self) -> None:
+                self._stream = io.BytesIO(b"complete body")
+
+            def read(self, size: int = -1) -> bytes:
+                return self._stream.read(size)
+
+            def seekable(self) -> bool:
+                return False
+
+            def tell(self) -> int:
+                return self._stream.tell()
+
+            def seek(self, offset: int, whence: int = 0) -> int:
+                if whence != 0 or offset != self._stream.tell():
+                    raise OSError("cannot rewind")
+                return offset
+
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request(
+                "PUT",
+                "/pages/raw",
+                files={"file": ("report.txt", CurrentOffsetOnlyFile(), "text/plain")},
+            )
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert b"complete body" in requests[0].content
+
 
 class TestAuthenticationReplay:
+    def test_one_shot_stream_401_does_not_replay_or_reauthenticate(
+        self,
+        httpx_mock,
+        session_settings,
+        monkeypatch,
+        tmp_path,
+        capsys,
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=401)
+        chunks = (chunk for chunk in (b"complete ", b"body"))
+
+        with DocmostClient(session_settings) as client, pytest.raises(SystemExit) as exc_info:
+            client.request("PUT", "/pages/raw", content=chunks)
+
+        assert exc_info.value.code == 3
+        assert len(httpx_mock.get_requests()) == 1
+        error = " ".join(capsys.readouterr().err.split())
+        assert "cannot be replayed safely" in error
+        assert "seekable multipart files" in error
+
     def test_session_auth_401_replays_post_body_once(
         self,
         httpx_mock,

@@ -105,8 +105,23 @@ def search_attachments(
 ) -> dict[str, Any]:
     """Search attachments by query string.
 
-    This endpoint is available on Docmost editions that expose attachment
-    search. Direct upload/info/download use the core attachment endpoints.
+    Attachment search requires Docmost's attachment-indexing feature.
+    Direct upload/info/download use the core attachment endpoints.
     """
     body = build_body({"query": query}, spaceId=space_id)
-    return client.post("/attachments/search", json=body, retry_safe=True)
+    return client.post(
+        "/search-attachments",
+        json=body,
+        retry_safe=True,
+        error_messages={
+            403: (
+                "Attachment search is unavailable or permission was denied. "
+                "Verify that Enterprise attachment indexing is enabled and that "
+                "you can access the requested space."
+            ),
+            404: (
+                "Attachment search is unavailable on this Docmost instance. "
+                "This command requires the Enterprise attachment-indexing feature."
+            ),
+        },
+    )

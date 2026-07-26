@@ -31,6 +31,7 @@ Commands for working with file attachments in a Docmost wiki.
 .SH SUBCOMMANDS
 .SS search
 Search for attachments by name or content.
+This command requires the Enterprise attachment\-indexing feature.
 .PP
 .I query
 is the search string.
@@ -41,7 +42,7 @@ Restrict search to attachments in a specific space.
 .B \-\-json
 Output as a JSON array instead of a Rich table.
 .PP
-Table columns: id, fileName, type.
+Table columns: id, fileName, highlight.
 .SS upload
 Upload a file or image owned by
 .I page\-id

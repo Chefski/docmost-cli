@@ -4,10 +4,12 @@ from typing import Any
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pagination import build_body
-from docmost_cli.output.formatter import print_error
+from docmost_cli.output.formatter import print_error, print_result
 
 __all__ = [
     "POSITION_FIRST",
+    "PageImportOverrideError",
+    "apply_import_overrides",
     "build_page_tree",
     "copy_page",
     "create_and_place_page",
@@ -33,6 +35,28 @@ __all__ = [
 
 # Fractional index string meaning "place at beginning" in Docmost's ordering.
 POSITION_FIRST = "aaaaa"
+
+
+class PageImportOverrideError(SystemExit):
+    """Raised when a page is imported but a requested override fails.
+
+    The original import response and page ID remain available so callers can
+    recover the page without retrying the import and creating a duplicate.
+    """
+
+    def __init__(
+        self,
+        *,
+        page_id: str,
+        result: dict[str, Any],
+        failures: tuple[SystemExit, ...],
+    ) -> None:
+        if not failures:
+            raise ValueError("At least one override failure is required.")
+        super().__init__(failures[0].code)
+        self.page_id = page_id
+        self.result = result
+        self.failures = failures
 
 
 def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
@@ -461,6 +485,51 @@ def export_page_archive(
     return response.content
 
 
+def apply_import_overrides(
+    client: DocmostClient,
+    *,
+    result: dict[str, Any],
+    title: str | None = None,
+    parent_page_id: str | None = None,
+) -> None:
+    """Apply metadata overrides after a successful single-page import.
+
+    Docmost's import controller ignores title and parent fields. This helper
+    keeps the post-import update/move sequence and partial-import recovery
+    consistent for CLI and API callers.
+    """
+    from docmost_cli.api.pagination import extract_id
+
+    page_id = extract_id(result)
+    failures: list[SystemExit] = []
+    if title is not None:
+        try:
+            update_page_meta(client, page_id=page_id, title=title)
+        except SystemExit as exc:
+            failures.append(exc)
+    if parent_page_id is not None:
+        try:
+            move_page(
+                client,
+                page_id=page_id,
+                parent_page_id=parent_page_id,
+                position=POSITION_FIRST,
+            )
+        except SystemExit as exc:
+            failures.append(exc)
+
+    if failures:
+        print_result(
+            page_id,
+            f"Imported page {page_id}, but failed to apply the requested override(s).",
+        )
+        raise PageImportOverrideError(
+            page_id=page_id,
+            result=result,
+            failures=tuple(failures),
+        ) from failures[0]
+
+
 def get_sidebar_pages(client: DocmostClient, space_id: str) -> dict[str, Any]:
     """Get page tree structure for a space.
 
@@ -490,20 +559,32 @@ def import_page(
 ) -> dict[str, Any]:
     """Import a file as a new page via multipart upload.
 
+    Docmost's single-page import endpoint only consumes the uploaded file and
+    ``spaceId``. The optional parent remains supported for API compatibility
+    and is applied through the page move endpoint after the import returns.
+
     Args:
         client: Authenticated Docmost client.
         space_id: Target space UUID.
         file_name: Original filename (used for MIME detection and upload).
         file_bytes: Raw file content bytes.
-        parent_page_id: Parent page UUID (optional).
+        parent_page_id: Parent page UUID applied after import (optional).
 
     Returns:
         Raw API response dict (should contain new page ID).
     """
     mime = "text/html" if file_name.lower().endswith((".html", ".htm")) else "text/markdown"
     files = {"file": (file_name, file_bytes, mime)}
-    data = build_body({"spaceId": space_id}, parentPageId=parent_page_id)
-    return client.post_multipart("/pages/import", data=data, files=files)
+    result = client.post_multipart("/pages/import", data={"spaceId": space_id}, files=files)
+
+    if parent_page_id is not None:
+        apply_import_overrides(
+            client,
+            result=result,
+            parent_page_id=parent_page_id,
+        )
+
+    return result
 
 
 def import_page_archive(

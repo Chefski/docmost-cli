@@ -17,17 +17,17 @@ search_app = typer.Typer(name="search", help="Search across the wiki.")
 def search_cmd(
     query: str = typer.Argument(help="Search query"),
     space: str | None = typer.Option(None, "--space", help="Filter by space slug"),
-    limit: int | None = typer.Option(None, "--limit", help="Max results (default: 20)"),
-    type_filter: str | None = typer.Option(None, "--type", help="Filter: page or attachment"),
+    limit: int | None = typer.Option(None, "--limit", help="Max results (server default: 25)"),
+    offset: int | None = typer.Option(None, "--offset", help="Number of results to skip"),
     json_mode: bool = typer.Option(False, "--json", help="Output as JSON array"),
 ) -> None:
-    """Full-text search across the wiki."""
+    """Full-text search across wiki pages."""
     client = get_client()
     space_id = None
     if space is not None:
         space_id = resolve_space_id(client, space)
 
-    result = search(client, query, space_id=space_id, result_type=type_filter, limit=limit)
+    result = search(client, query, space_id=space_id, limit=limit, offset=offset)
     items = extract_items(result)
     columns = ["id", "title", "highlight"]
     print_table(items, columns, json_mode=json_mode)

@@ -11,7 +11,7 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, cast
@@ -66,18 +66,22 @@ class DocmostClient:
         request_factory: Callable[[], httpx.Request],
         *,
         retry_safe: bool = False,
+        error_messages: Mapping[int, str] | None = None,
+        body_replayable: bool = True,
     ) -> httpx.Response:
         """Send a request with authentication and mutation-safe retry handling.
 
         Transient transport errors, HTTP 429 responses, and HTTP 5xx responses
         are retried only for idempotent HTTP methods or when the caller
-        explicitly marks a request as safe to replay. A single replay after a
-        session-auth 401 is allowed for every method because the rejected
-        request was not authorized.
+        explicitly marks a request as safe to replay. A single replay of a
+        replayable body after a session-auth 401 is allowed for every method
+        because the rejected request was not authorized.
 
         Args:
             request_factory: Creates a fresh, complete request for every attempt.
             retry_safe: Whether the caller guarantees the request is safe to replay.
+            error_messages: Optional status-specific error messages.
+            body_replayable: Whether rebuilding reproduces the complete request body.
 
         Returns:
             The HTTP response (success only; errors raise SystemExit).
@@ -85,7 +89,9 @@ class DocmostClient:
         # Rebuilding from source arguments lets httpx rewind seekable multipart
         # fields without retaining a second encoded copy of a large upload.
         request = request_factory()
-        can_retry_transient = retry_safe or request.method.upper() in _IDEMPOTENT_METHODS
+        can_retry_transient = body_replayable and (
+            retry_safe or request.method.upper() in _IDEMPOTENT_METHODS
+        )
         transient_attempt = 0
         reauthenticated = False
 
@@ -121,7 +127,19 @@ class DocmostClient:
             # A 401 means the server rejected the request before authorizing the
             # operation, so one replay after refreshing session auth is safe
             # even for a mutation.
-            if response.status_code == 401 and self._auth.can_retry() and not reauthenticated:
+            if response.status_code == 401 and self._auth.can_retry() and not body_replayable:
+                print_error(
+                    "Session expired, but this request body cannot be replayed safely. "
+                    "Retry with bytes, a list or tuple of byte chunks, or seekable "
+                    "multipart files.",
+                    exit_code=3,
+                )
+            if (
+                response.status_code == 401
+                and self._auth.can_retry()
+                and not reauthenticated
+                and body_replayable
+            ):
                 response.close()
                 try:
                     self._auth.refresh(self._http)
@@ -150,6 +168,7 @@ class DocmostClient:
                 retry_skipped=(
                     response.status_code in _RETRYABLE_STATUS and not can_retry_transient
                 ),
+                error_messages=error_messages,
             )
             return response
 
@@ -209,11 +228,60 @@ class DocmostClient:
                 )
         print_error(message, exit_code=1)
 
+    @staticmethod
+    def _content_is_replayable(content: Any) -> bool:
+        """Return whether raw content is a known-repeatable byte source."""
+        if content is None or isinstance(content, (str, bytes)):
+            return True
+        return type(content) in (list, tuple) and all(isinstance(chunk, bytes) for chunk in content)
+
+    @staticmethod
+    def _data_is_replayable(data: Any) -> bool:
+        """Return whether form or legacy streaming data can be rebuilt safely."""
+        if data is None or isinstance(data, Mapping):
+            return True
+        return DocmostClient._content_is_replayable(data)
+
+    @staticmethod
+    def _files_are_replayable(files: Any) -> bool:
+        """Return whether multipart file values are bytes or seekable streams."""
+        if not files:
+            return True
+
+        if isinstance(files, Mapping):
+            values: Iterable[Any] = files.values()
+        elif type(files) in (list, tuple):
+            if not all(type(item) in (list, tuple) and len(item) == 2 for item in files):
+                return False
+            values = (item[1] for item in files)
+        else:
+            return False
+
+        for value in values:
+            file_value = value[1] if isinstance(value, tuple) and len(value) >= 2 else value
+            if isinstance(file_value, (str, bytes)):
+                continue
+            try:
+                seekable = getattr(file_value, "seekable", None)
+                if not callable(seekable) or not seekable():
+                    return False
+                position = file_value.tell()
+                file_value.seek(0)
+                if file_value.tell() != 0:
+                    return False
+                file_value.seek(position)
+                if file_value.tell() != position:
+                    return False
+            except (AttributeError, OSError, TypeError, ValueError):
+                return False
+        return True
+
     def request(
         self,
         method: str,
         path: str,
         *,
+        error_messages: Mapping[int, str] | None = None,
         retry_safe: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -222,6 +290,7 @@ class DocmostClient:
         Args:
             method: HTTP method (GET, POST, etc.).
             path: API path relative to /api/ (e.g., "/pages/info").
+            error_messages: Optional status-specific error messages.
             retry_safe: Explicitly allow retries for a replay-safe request.
             **kwargs: Additional arguments passed to httpx (json, params, etc.).
 
@@ -233,7 +302,17 @@ class DocmostClient:
         def request_factory() -> httpx.Request:
             return self._http.build_request(method, url, **kwargs)
 
-        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
+        body_replayable = self._content_is_replayable(kwargs.get("content"))
+        body_replayable = body_replayable and self._data_is_replayable(kwargs.get("data"))
+        files = kwargs.get("files")
+        if files is not None:
+            body_replayable = body_replayable and self._files_are_replayable(files)
+        response = self._send_with_retry(
+            request_factory,
+            retry_safe=retry_safe,
+            error_messages=error_messages,
+            body_replayable=body_replayable,
+        )
         return cast("dict[str, Any]", response.json())
 
     def post(
@@ -241,6 +320,7 @@ class DocmostClient:
         path: str,
         json: dict[str, Any] | None = None,
         *,
+        error_messages: Mapping[int, str] | None = None,
         retry_safe: bool = False,
     ) -> dict[str, Any]:
         """Convenience method for POST requests.
@@ -250,12 +330,19 @@ class DocmostClient:
         Args:
             path: API path relative to /api/.
             json: JSON body to send.
+            error_messages: Optional status-specific error messages.
             retry_safe: Explicitly allow retries when this POST is read-only or idempotent.
 
         Returns:
             Parsed JSON response body.
         """
-        return self.request("POST", path, json=json, retry_safe=retry_safe)
+        return self.request(
+            "POST",
+            path,
+            json=json,
+            retry_safe=retry_safe,
+            error_messages=error_messages,
+        )
 
     def post_multipart(
         self,
@@ -281,7 +368,11 @@ class DocmostClient:
         def request_factory() -> httpx.Request:
             return self._http.build_request("POST", url, data=data, files=files)
 
-        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
+        response = self._send_with_retry(
+            request_factory,
+            retry_safe=retry_safe,
+            body_replayable=self._files_are_replayable(files),
+        )
         return cast("dict[str, Any]", response.json())
 
     def post_raw(
@@ -378,6 +469,7 @@ class DocmostClient:
     def _handle_error(
         response: httpx.Response,
         *,
+        error_messages: Mapping[int, str] | None = None,
         method: str = "",
         retry_skipped: bool = False,
     ) -> None:
@@ -385,6 +477,7 @@ class DocmostClient:
 
         Args:
             response: The HTTP response to check.
+            error_messages: Optional status-specific error messages.
             method: Request method, used to explain mutation retry safety.
             retry_skipped: Whether a transient retry was deliberately skipped.
         """
@@ -393,7 +486,9 @@ class DocmostClient:
 
         status = response.status_code
 
-        if status == 401:
+        if error_messages and status in error_messages:
+            print_error(error_messages[status], exit_code=4 if status == 404 else 1)
+        elif status == 401:
             print_error(
                 "Authentication failed. Run 'docmost-cli config test' to verify.",
                 exit_code=3,
