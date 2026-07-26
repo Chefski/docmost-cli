@@ -232,10 +232,10 @@ docmost-cli comment update <comment-id>           # Edit a comment
 ### 4.6 `docmost-cli search`
 
 ```
-docmost-cli search <query>                        # Full-text search
+docmost-cli search query <query>                  # Full-text page search
   --space <space-slug>                        # Filter by space
-  --limit N                                   # Max results (default: 20)
-  --type page|attachment                      # Filter by result type
+  --limit N                                   # Max results (server default: 25)
+  --offset N                                  # Number of results to skip
   --json                                      # Output as JSON array
 ```
 
@@ -425,12 +425,12 @@ POST /comments/delete     → {commentId}
 
 **Search:**
 ```
-POST /search              → {query, spaceId?, type?, limit?, cursor?}
+POST /search              → {query, spaceId?, limit?, offset?}
 ```
 
 **Attachments:**
 ```
-POST /attachments/search  → {query, spaceId?}
+POST /search-attachments  → {query, spaceId?} (Enterprise attachment indexing)
 POST /files/upload        → multipart: file, pageId, attachmentId? (stable replacement)
 POST /files/info          → {attachmentId}
 GET  /files/{id}/{name}   → authenticated file download
@@ -691,7 +691,7 @@ def print_error(message: str, exit_code: int = 1) -> NoReturn:
 - [x] `docmost-cli space list` (with `--json`)
 - [x] `docmost-cli page list <space>` (with `--json`)
 - [x] `docmost-cli page get <id>` with ProseMirror→Markdown conversion (with `--meta`)
-- [x] `docmost-cli search <query>` (with `--json`)
+- [x] `docmost-cli search query <query>` (with `--json`)
 - [x] Basic error handling with exit codes
 
 ### Phase 2: Write Operations

@@ -10,12 +10,11 @@ docmost\-cli\-search \- full\-text search across a Docmost wiki
 .IR slug ]
 .RB [ \-\-limit
 .IR N ]
-.RB [ \-\-type
-.BR page | attachment ]
+.RB [ \-\-offset
+.IR N ]
 .RB [ \-\-json ]
 .SH DESCRIPTION
-Full\-text search across all pages and attachments in the Docmost
-workspace.
+Full\-text search across pages in the Docmost workspace.
 Results include a highlighted snippet showing the matching text
 in context.
 .SH SUBCOMMANDS
@@ -30,13 +29,12 @@ Restrict search to a specific space.
 .TP
 .BI \-\-limit " N"
 Maximum number of results.
-Default: 20.
+Server default: 25.
 .TP
-.BI \-\-type " type"
-Filter results by type:
-.B page
-or
-.BR attachment .
+.BI \-\-offset " N"
+Skip the first
+.I N
+results.
 .TP
 .B \-\-json
 Output as a JSON array instead of a Rich table.
@@ -56,14 +54,6 @@ Search within a specific space:
 .RS 4
 .EX
 $ docmost\-cli search query "API endpoint" \-\-space eng
-.EE
-.RE
-.PP
-Search for attachments only:
-.PP
-.RS 4
-.EX
-$ docmost\-cli search query "diagram" \-\-type attachment
 .EE
 .RE
 .PP

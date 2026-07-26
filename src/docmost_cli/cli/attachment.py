@@ -136,12 +136,12 @@ def attachment_search_cmd(
     space: str | None = typer.Option(None, "--space", help="Space slug to scope search"),
     json_mode: bool = typer.Option(False, "--json", help="Output as JSON array"),
 ) -> None:
-    """Search attachments."""
+    """Search attachments (requires Enterprise attachment indexing)."""
     client = get_client()
     space_id = None
     if space:
         space_id = resolve_space_id(client, space)
     result = search_attachments(client, query, space_id=space_id)
     items = extract_items(result)
-    columns = ["id", "fileName", "type"]
+    columns = ["id", "fileName", "highlight"]
     print_table(items, columns, json_mode=json_mode)

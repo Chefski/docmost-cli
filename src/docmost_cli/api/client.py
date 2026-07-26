@@ -11,7 +11,7 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, cast
@@ -66,6 +66,7 @@ class DocmostClient:
         request_factory: Callable[[], httpx.Request],
         *,
         retry_safe: bool = False,
+        error_messages: Mapping[int, str] | None = None,
     ) -> httpx.Response:
         """Send a request with authentication and mutation-safe retry handling.
 
@@ -78,6 +79,7 @@ class DocmostClient:
         Args:
             request_factory: Creates a fresh, complete request for every attempt.
             retry_safe: Whether the caller guarantees the request is safe to replay.
+            error_messages: Optional status-specific error messages.
 
         Returns:
             The HTTP response (success only; errors raise SystemExit).
@@ -150,6 +152,7 @@ class DocmostClient:
                 retry_skipped=(
                     response.status_code in _RETRYABLE_STATUS and not can_retry_transient
                 ),
+                error_messages=error_messages,
             )
             return response
 
@@ -214,6 +217,7 @@ class DocmostClient:
         method: str,
         path: str,
         *,
+        error_messages: Mapping[int, str] | None = None,
         retry_safe: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
@@ -222,6 +226,7 @@ class DocmostClient:
         Args:
             method: HTTP method (GET, POST, etc.).
             path: API path relative to /api/ (e.g., "/pages/info").
+            error_messages: Optional status-specific error messages.
             retry_safe: Explicitly allow retries for a replay-safe request.
             **kwargs: Additional arguments passed to httpx (json, params, etc.).
 
@@ -233,7 +238,11 @@ class DocmostClient:
         def request_factory() -> httpx.Request:
             return self._http.build_request(method, url, **kwargs)
 
-        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
+        response = self._send_with_retry(
+            request_factory,
+            retry_safe=retry_safe,
+            error_messages=error_messages,
+        )
         return cast("dict[str, Any]", response.json())
 
     def post(
@@ -241,6 +250,7 @@ class DocmostClient:
         path: str,
         json: dict[str, Any] | None = None,
         *,
+        error_messages: Mapping[int, str] | None = None,
         retry_safe: bool = False,
     ) -> dict[str, Any]:
         """Convenience method for POST requests.
@@ -250,12 +260,19 @@ class DocmostClient:
         Args:
             path: API path relative to /api/.
             json: JSON body to send.
+            error_messages: Optional status-specific error messages.
             retry_safe: Explicitly allow retries when this POST is read-only or idempotent.
 
         Returns:
             Parsed JSON response body.
         """
-        return self.request("POST", path, json=json, retry_safe=retry_safe)
+        return self.request(
+            "POST",
+            path,
+            json=json,
+            retry_safe=retry_safe,
+            error_messages=error_messages,
+        )
 
     def post_multipart(
         self,
@@ -378,6 +395,7 @@ class DocmostClient:
     def _handle_error(
         response: httpx.Response,
         *,
+        error_messages: Mapping[int, str] | None = None,
         method: str = "",
         retry_skipped: bool = False,
     ) -> None:
@@ -385,6 +403,7 @@ class DocmostClient:
 
         Args:
             response: The HTTP response to check.
+            error_messages: Optional status-specific error messages.
             method: Request method, used to explain mutation retry safety.
             retry_skipped: Whether a transient retry was deliberately skipped.
         """
@@ -393,7 +412,9 @@ class DocmostClient:
 
         status = response.status_code
 
-        if status == 401:
+        if error_messages and status in error_messages:
+            print_error(error_messages[status], exit_code=4 if status == 404 else 1)
+        elif status == 401:
             print_error(
                 "Authentication failed. Run 'docmost-cli config test' to verify.",
                 exit_code=3,
