@@ -11,6 +11,7 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
+from collections.abc import Mapping
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -56,11 +57,17 @@ class DocmostClient:
             self._log.addHandler(handler)
             self._log.setLevel(logging.DEBUG)
 
-    def _send_with_retry(self, request: httpx.Request) -> httpx.Response:
+    def _send_with_retry(
+        self,
+        request: httpx.Request,
+        *,
+        error_messages: Mapping[int, str] | None = None,
+    ) -> httpx.Response:
         """Send a request with auth, retry on 401/429/5xx, and error handling.
 
         Args:
             request: The prepared httpx request.
+            error_messages: Optional status-specific error messages.
 
         Returns:
             The HTTP response (success only; errors raise SystemExit).
@@ -151,16 +158,24 @@ class DocmostClient:
                 self._log.debug("  → %s (retry)", response.status_code)
 
         # Translate HTTP errors
-        self._handle_error(response)
+        self._handle_error(response, error_messages=error_messages)
 
         return response
 
-    def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        error_messages: Mapping[int, str] | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         """Make an authenticated API request with error handling.
 
         Args:
             method: HTTP method (GET, POST, etc.).
             path: API path relative to /api/ (e.g., "/pages/info").
+            error_messages: Optional status-specific error messages.
             **kwargs: Additional arguments passed to httpx (json, params, etc.).
 
         Returns:
@@ -168,10 +183,16 @@ class DocmostClient:
         """
         url = self.api_url(path)
         request = self._http.build_request(method, url, **kwargs)
-        response = self._send_with_retry(request)
+        response = self._send_with_retry(request, error_messages=error_messages)
         return cast("dict[str, Any]", response.json())
 
-    def post(self, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def post(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+        *,
+        error_messages: Mapping[int, str] | None = None,
+    ) -> dict[str, Any]:
         """Convenience method for POST requests.
 
         Most Docmost API endpoints use POST.
@@ -179,11 +200,12 @@ class DocmostClient:
         Args:
             path: API path relative to /api/.
             json: JSON body to send.
+            error_messages: Optional status-specific error messages.
 
         Returns:
             Parsed JSON response body.
         """
-        return self.request("POST", path, json=json)
+        return self.request("POST", path, json=json, error_messages=error_messages)
 
     def post_multipart(
         self,
@@ -284,18 +306,25 @@ class DocmostClient:
         self.close()
 
     @staticmethod
-    def _handle_error(response: httpx.Response) -> None:
+    def _handle_error(
+        response: httpx.Response,
+        *,
+        error_messages: Mapping[int, str] | None = None,
+    ) -> None:
         """Translate HTTP error responses to user-friendly messages.
 
         Args:
             response: The HTTP response to check.
+            error_messages: Optional status-specific error messages.
         """
         if response.is_success:
             return
 
         status = response.status_code
 
-        if status == 401:
+        if error_messages and status in error_messages:
+            print_error(error_messages[status], exit_code=4 if status == 404 else 1)
+        elif status == 401:
             print_error(
                 "Authentication failed. Run 'docmost-cli config test' to verify.",
                 exit_code=3,
