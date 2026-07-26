@@ -73,7 +73,11 @@ def upload_attachment(
 
 def get_attachment_info(client: DocmostClient, attachment_id: str) -> dict[str, Any]:
     """Return attachment metadata plus stable relative and absolute URLs."""
-    response = client.post("/files/info", json={"attachmentId": attachment_id})
+    response = client.post(
+        "/files/info",
+        json={"attachmentId": attachment_id},
+        retry_safe=True,
+    )
     attachment = response.get("data", response)
     return _with_urls(client, attachment)
 
@@ -105,4 +109,4 @@ def search_attachments(
     search. Direct upload/info/download use the core attachment endpoints.
     """
     body = build_body({"query": query}, spaceId=space_id)
-    return client.post("/attachments/search", json=body)
+    return client.post("/attachments/search", json=body, retry_safe=True)

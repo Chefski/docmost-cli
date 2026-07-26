@@ -745,6 +745,165 @@ class TestPushMoveOnly:
 
 
 # ---------------------------------------------------------------------------
+# push_space — combined update and move
+# ---------------------------------------------------------------------------
+
+
+class TestPushUpdateAndMove:
+    """push_space applies both operations when a modified page also moves."""
+
+    def test_content_update_then_move(self, httpx_mock, tmp_path: Path, capsys) -> None:
+        old_body = "Old content.\n"
+        new_body = "New content.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id="old-parent",
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                )
+            },
+        )
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            parent_id="new-parent",
+            body=new_body,
+        )
+
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/move",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target)
+
+        assert result.updated == 1
+        assert result.moved == 1
+        requests = httpx_mock.get_requests()
+        assert [request.url.path for request in requests] == [
+            "/api/spaces",
+            "/api/pages/update",
+            "/api/pages/move",
+        ]
+        assert json.loads(requests[1].content)["content"] == new_body
+        assert json.loads(requests[2].content)["parentPageId"] == "new-parent"
+
+        manifest = load_manifest(target)
+        assert manifest["pages"][FAKE_PAGE_ID]["content_hash"] == compute_content_hash(new_body)
+        assert manifest["pages"][FAKE_PAGE_ID]["parent_id"] == "new-parent"
+        assert "1 updated, 1 moved" in capsys.readouterr().err
+
+    def test_metadata_update_then_move(self, httpx_mock, tmp_path: Path) -> None:
+        body = "Same content.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="Old Title",
+                    filename="page.md",
+                    parent_id="old-parent",
+                    icon="old-icon",
+                    content_hash=compute_content_hash(body),
+                )
+            },
+        )
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="New Title",
+            parent_id="new-parent",
+            icon="new-icon",
+            body=body,
+        )
+
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/move",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target)
+
+        assert result.updated == 1
+        assert result.moved == 1
+        requests = httpx_mock.get_requests()
+        update_payload = json.loads(requests[1].content)
+        assert update_payload["title"] == "New Title"
+        assert update_payload["icon"] == "new-icon"
+        assert json.loads(requests[2].content)["parentPageId"] == "new-parent"
+
+        manifest = load_manifest(target)
+        assert manifest["pages"][FAKE_PAGE_ID]["title"] == "New Title"
+        assert manifest["pages"][FAKE_PAGE_ID]["icon"] == "new-icon"
+        assert manifest["pages"][FAKE_PAGE_ID]["parent_id"] == "new-parent"
+
+    def test_failed_move_does_not_advance_manifest_parent(self, httpx_mock, tmp_path: Path) -> None:
+        old_body = "Old content.\n"
+        new_body = "New content.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="page.md",
+                    parent_id="old-parent",
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                )
+            },
+        )
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            parent_id="new-parent",
+            body=new_body,
+        )
+
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/move",
+            status_code=400,
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            push_space(client, "eng", target)
+
+        requests = httpx_mock.get_requests()
+        assert [request.url.path for request in requests] == [
+            "/api/spaces",
+            "/api/pages/update",
+            "/api/pages/move",
+        ]
+        manifest = load_manifest(target)
+        assert manifest["pages"][FAKE_PAGE_ID]["content_hash"] == compute_content_hash(old_body)
+        assert manifest["pages"][FAKE_PAGE_ID]["parent_id"] == "old-parent"
+
+
+# ---------------------------------------------------------------------------
 # push_space — dry run
 # ---------------------------------------------------------------------------
 
