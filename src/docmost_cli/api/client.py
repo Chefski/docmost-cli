@@ -67,19 +67,21 @@ class DocmostClient:
         *,
         retry_safe: bool = False,
         error_messages: Mapping[int, str] | None = None,
+        body_replayable: bool = True,
     ) -> httpx.Response:
         """Send a request with authentication and mutation-safe retry handling.
 
         Transient transport errors, HTTP 429 responses, and HTTP 5xx responses
         are retried only for idempotent HTTP methods or when the caller
-        explicitly marks a request as safe to replay. A single replay after a
-        session-auth 401 is allowed for every method because the rejected
-        request was not authorized.
+        explicitly marks a request as safe to replay. A single replay of a
+        replayable body after a session-auth 401 is allowed for every method
+        because the rejected request was not authorized.
 
         Args:
             request_factory: Creates a fresh, complete request for every attempt.
             retry_safe: Whether the caller guarantees the request is safe to replay.
             error_messages: Optional status-specific error messages.
+            body_replayable: Whether rebuilding reproduces the complete request body.
 
         Returns:
             The HTTP response (success only; errors raise SystemExit).
@@ -87,7 +89,9 @@ class DocmostClient:
         # Rebuilding from source arguments lets httpx rewind seekable multipart
         # fields without retaining a second encoded copy of a large upload.
         request = request_factory()
-        can_retry_transient = retry_safe or request.method.upper() in _IDEMPOTENT_METHODS
+        can_retry_transient = body_replayable and (
+            retry_safe or request.method.upper() in _IDEMPOTENT_METHODS
+        )
         transient_attempt = 0
         reauthenticated = False
 
@@ -123,7 +127,18 @@ class DocmostClient:
             # A 401 means the server rejected the request before authorizing the
             # operation, so one replay after refreshing session auth is safe
             # even for a mutation.
-            if response.status_code == 401 and self._auth.can_retry() and not reauthenticated:
+            if response.status_code == 401 and self._auth.can_retry() and not body_replayable:
+                print_error(
+                    "Session expired, but this request body cannot be replayed safely. "
+                    "Retry with bytes, a repeatable iterable, or a seekable file.",
+                    exit_code=3,
+                )
+            if (
+                response.status_code == 401
+                and self._auth.can_retry()
+                and not reauthenticated
+                and body_replayable
+            ):
                 response.close()
                 try:
                     self._auth.refresh(self._http)
@@ -212,6 +227,32 @@ class DocmostClient:
                 )
         print_error(message, exit_code=1)
 
+    @staticmethod
+    def _content_is_replayable(content: Any) -> bool:
+        """Return whether raw request content can be iterated more than once."""
+        if content is None or isinstance(content, (str, bytes)):
+            return True
+        try:
+            return iter(content) is not content
+        except TypeError:
+            return False
+
+    @staticmethod
+    def _files_are_replayable(files: dict[str, Any] | None) -> bool:
+        """Return whether multipart file values are bytes or seekable streams."""
+        if not files:
+            return True
+        for value in files.values():
+            file_value = value[1] if isinstance(value, tuple) and len(value) >= 2 else value
+            if isinstance(file_value, (str, bytes)):
+                continue
+            try:
+                position = file_value.tell()
+                file_value.seek(position)
+            except (AttributeError, OSError, TypeError):
+                return False
+        return True
+
     def request(
         self,
         method: str,
@@ -238,10 +279,15 @@ class DocmostClient:
         def request_factory() -> httpx.Request:
             return self._http.build_request(method, url, **kwargs)
 
+        body_replayable = self._content_is_replayable(kwargs.get("content"))
+        files = kwargs.get("files")
+        if isinstance(files, dict):
+            body_replayable = body_replayable and self._files_are_replayable(files)
         response = self._send_with_retry(
             request_factory,
             retry_safe=retry_safe,
             error_messages=error_messages,
+            body_replayable=body_replayable,
         )
         return cast("dict[str, Any]", response.json())
 
@@ -298,7 +344,11 @@ class DocmostClient:
         def request_factory() -> httpx.Request:
             return self._http.build_request("POST", url, data=data, files=files)
 
-        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
+        response = self._send_with_retry(
+            request_factory,
+            retry_safe=retry_safe,
+            body_replayable=self._files_are_replayable(files),
+        )
         return cast("dict[str, Any]", response.json())
 
     def post_raw(

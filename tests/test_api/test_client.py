@@ -252,8 +252,50 @@ class TestMutationSafeRetries:
         assert exc_info.value.code == 1
         assert len(httpx_mock.get_requests()) == 4
 
+    def test_one_shot_stream_body_disables_automatic_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+        capsys,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+        chunks = (chunk for chunk in (b"complete ", b"body"))
+
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request("PUT", "/pages/raw", content=chunks)
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert requests[0].content == b"complete body"
+        error = " ".join(capsys.readouterr().err.split())
+        assert "not retried automatically" in error
+        assert "verify server state" in error
+
 
 class TestAuthenticationReplay:
+    def test_one_shot_stream_401_does_not_replay_or_reauthenticate(
+        self,
+        httpx_mock,
+        session_settings,
+        monkeypatch,
+        tmp_path,
+        capsys,
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=401)
+        chunks = (chunk for chunk in (b"complete ", b"body"))
+
+        with DocmostClient(session_settings) as client, pytest.raises(SystemExit) as exc_info:
+            client.request("PUT", "/pages/raw", content=chunks)
+
+        assert exc_info.value.code == 3
+        assert len(httpx_mock.get_requests()) == 1
+        error = " ".join(capsys.readouterr().err.split())
+        assert "cannot be replayed safely" in error
+        assert "seekable file" in error
+
     def test_session_auth_401_replays_post_body_once(
         self,
         httpx_mock,
