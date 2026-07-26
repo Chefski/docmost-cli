@@ -432,14 +432,22 @@ def page_import_cmd(
 
     # The import controller consumes only the file and spaceId. Apply explicit
     # metadata overrides through the page endpoints after the page exists.
-    if title is not None:
-        update_page_meta(client, page_id=new_id, title=title)
-    if parent is not None:
-        move_page(
-            client,
-            page_id=new_id,
-            parent_page_id=parent,
-            position=POSITION_FIRST,
+    try:
+        if title is not None:
+            update_page_meta(client, page_id=new_id, title=title)
+        if parent is not None:
+            move_page(
+                client,
+                page_id=new_id,
+                parent_page_id=parent,
+                position=POSITION_FIRST,
+            )
+    except SystemExit:
+        print_result(
+            new_id,
+            f"Imported '{detected_title}' as page {new_id}, "
+            "but failed to apply the requested override(s).",
         )
+        raise
 
     print_result(new_id, f"Imported '{detected_title}' from {file.name}")

@@ -672,6 +672,48 @@ class TestPageImport:
         assert result.exit_code == 0
         assert "imported-page" in result.output
 
+    def test_import_reports_page_id_when_parent_override_fails(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+    ) -> None:
+        md_file = tmp_path / "doc.md"
+        md_file.write_text("# Imported Page\n\nContent")
+
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces",
+            json={"data": {"items": [{"id": "s1", "slug": "eng", "name": "Eng"}]}},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            status_code=404,
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "import",
+                "eng",
+                "--file",
+                str(md_file),
+                "--parent",
+                "missing-parent",
+            ],
+        )
+
+        assert result.exit_code == 4
+        assert result.stdout == "imported-page\n"
+        assert "failed to apply" in result.stderr
+        assert "requested override" in result.stderr
+
 
 class TestPageListTree:
     def test_tree(self, tmp_config, httpx_mock) -> None:
