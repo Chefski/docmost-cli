@@ -1,0 +1,686 @@
+{
+  "docmost": {
+    "repository": "docmost/docmost",
+    "ref": "70d2ff86856f0ffa66b5c64d0dadac80133c8b5c",
+    "version": "0.95.0"
+  },
+  "operations": {
+    "auth.login": {
+      "method": "POST",
+      "path": "/auth/login",
+      "edition": "community",
+      "allowed_fields": ["email", "password"],
+      "required_fields": ["email", "password"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/auth/auth.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/auth/dto/login.dto.ts",
+          "name": "LoginDto",
+          "fields": ["email", "password"],
+          "required": ["email", "password"]
+        }
+      ]
+    },
+    "attachments.download": {
+      "method": "GET",
+      "path": "/files/:fileId/:fileName",
+      "edition": "community",
+      "allowed_fields": [],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/attachment/attachment.controller.ts"
+      }
+    },
+    "attachments.info": {
+      "method": "POST",
+      "path": "/files/info",
+      "edition": "community",
+      "allowed_fields": ["attachmentId"],
+      "required_fields": ["attachmentId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/attachment/attachment.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/attachment/dto/attachment.dto.ts",
+          "name": "AttachmentInfoDto",
+          "fields": ["attachmentId"],
+          "required": ["attachmentId"]
+        }
+      ]
+    },
+    "attachments.search": {
+      "method": "POST",
+      "path": "/search-attachments",
+      "edition": "enterprise",
+      "allowed_fields": ["query", "shareId", "spaceId"],
+      "required_fields": ["query"],
+      "upstream": {
+        "kind": "client-reference",
+        "file": "apps/client/src/features/search/services/search-service.ts",
+        "route_literal": "\"/search-attachments\""
+      },
+      "schema_sources": [
+        {
+          "kind": "interface",
+          "file": "apps/client/src/features/search/types/search.types.ts",
+          "name": "IPageSearchParams",
+          "fields": ["query", "shareId", "spaceId"],
+          "required": ["query"]
+        }
+      ]
+    },
+    "attachments.upload": {
+      "method": "POST",
+      "path": "/files/upload",
+      "edition": "community",
+      "allowed_fields": ["attachmentId", "pageId"],
+      "required_fields": ["pageId"],
+      "file_fields": ["file"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/attachment/attachment.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "multipart-handler",
+          "file": "apps/server/src/core/attachment/attachment.controller.ts",
+          "name": "uploadFile",
+          "fields": ["attachmentId", "pageId"],
+          "required": ["pageId"]
+        }
+      ]
+    },
+    "comments.create": {
+      "method": "POST",
+      "path": "/comments/create",
+      "edition": "community",
+      "allowed_fields": [
+        "content",
+        "pageId",
+        "parentCommentId",
+        "selection",
+        "type",
+        "yjsSelection"
+      ],
+      "required_fields": ["content", "pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/comment/comment.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/comment/dto/create-comment.dto.ts",
+          "name": "CreateCommentDto",
+          "fields": [
+            "content",
+            "pageId",
+            "parentCommentId",
+            "selection",
+            "type",
+            "yjsSelection"
+          ],
+          "required": ["content", "pageId"]
+        }
+      ]
+    },
+    "comments.list": {
+      "method": "POST",
+      "path": "/comments",
+      "edition": "community",
+      "allowed_fields": ["adminView", "beforeCursor", "cursor", "limit", "pageId", "query"],
+      "required_fields": ["pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/comment/comment.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/comment/dto/comments.input.ts",
+          "name": "PageIdDto",
+          "fields": ["pageId"],
+          "required": ["pageId"]
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/database/pagination/pagination-options.ts",
+          "name": "PaginationOptions",
+          "fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+          "required": []
+        }
+      ]
+    },
+    "comments.update": {
+      "method": "POST",
+      "path": "/comments/update",
+      "edition": "community",
+      "allowed_fields": ["commentId", "content"],
+      "required_fields": ["commentId", "content"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/comment/comment.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/comment/dto/update-comment.dto.ts",
+          "name": "UpdateCommentDto",
+          "fields": ["commentId", "content"],
+          "required": ["commentId", "content"]
+        }
+      ]
+    },
+    "pages.delete": {
+      "method": "POST",
+      "path": "/pages/delete",
+      "edition": "community",
+      "allowed_fields": ["pageId", "permanentlyDelete"],
+      "required_fields": ["pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/page.dto.ts",
+          "name": "PageIdDto",
+          "fields": ["pageId"],
+          "required": ["pageId"]
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/page.dto.ts",
+          "name": "DeletePageDto",
+          "fields": ["permanentlyDelete"],
+          "required": []
+        }
+      ]
+    },
+    "pages.duplicate": {
+      "method": "POST",
+      "path": "/pages/duplicate",
+      "edition": "community",
+      "allowed_fields": ["pageId", "spaceId"],
+      "required_fields": ["pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/duplicate-page.dto.ts",
+          "name": "DuplicatePageDto",
+          "fields": ["pageId", "spaceId"],
+          "required": ["pageId"]
+        }
+      ]
+    },
+    "pages.export": {
+      "method": "POST",
+      "path": "/pages/export",
+      "edition": "community",
+      "allowed_fields": ["format", "includeAttachments", "includeChildren", "pageId"],
+      "required_fields": ["format", "pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/integrations/export/export.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/integrations/export/dto/export-dto.ts",
+          "name": "ExportPageDto",
+          "fields": ["format", "includeAttachments", "includeChildren", "pageId"],
+          "required": ["format", "pageId"]
+        }
+      ]
+    },
+    "pages.history": {
+      "method": "POST",
+      "path": "/pages/history",
+      "edition": "community",
+      "allowed_fields": ["adminView", "beforeCursor", "cursor", "limit", "pageId", "query"],
+      "required_fields": ["pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/page.dto.ts",
+          "name": "PageIdDto",
+          "fields": ["pageId"],
+          "required": ["pageId"]
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/database/pagination/pagination-options.ts",
+          "name": "PaginationOptions",
+          "fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+          "required": []
+        }
+      ]
+    },
+    "pages.import": {
+      "method": "POST",
+      "path": "/pages/import",
+      "edition": "community",
+      "allowed_fields": ["spaceId"],
+      "required_fields": ["spaceId"],
+      "file_fields": ["file"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/integrations/import/import.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "multipart-handler",
+          "file": "apps/server/src/integrations/import/import.controller.ts",
+          "name": "importPage",
+          "fields": ["spaceId"],
+          "required": ["spaceId"]
+        }
+      ]
+    },
+    "pages.import-zip": {
+      "method": "POST",
+      "path": "/pages/import-zip",
+      "edition": "community",
+      "allowed_fields": ["source", "spaceId"],
+      "required_fields": ["source", "spaceId"],
+      "file_fields": ["file"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/integrations/import/import.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "multipart-handler",
+          "file": "apps/server/src/integrations/import/import.controller.ts",
+          "name": "importZip",
+          "fields": ["source", "spaceId"],
+          "required": ["source", "spaceId"]
+        }
+      ]
+    },
+    "pages.info": {
+      "method": "POST",
+      "path": "/pages/info",
+      "edition": "community",
+      "allowed_fields": ["format", "includeContent", "includeSpace", "pageId"],
+      "required_fields": ["pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/page.dto.ts",
+          "name": "PageIdDto",
+          "fields": ["pageId"],
+          "required": ["pageId"]
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/page.dto.ts",
+          "name": "PageInfoDto",
+          "fields": ["format", "includeContent", "includeSpace"],
+          "required": []
+        }
+      ]
+    },
+    "pages.move": {
+      "method": "POST",
+      "path": "/pages/move",
+      "edition": "community",
+      "allowed_fields": ["pageId", "parentPageId", "position"],
+      "required_fields": ["pageId", "position"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/move-page.dto.ts",
+          "name": "MovePageDto",
+          "fields": ["pageId", "parentPageId", "position"],
+          "required": ["pageId", "position"]
+        }
+      ]
+    },
+    "pages.move-to-space": {
+      "method": "POST",
+      "path": "/pages/move-to-space",
+      "edition": "community",
+      "allowed_fields": ["pageId", "spaceId"],
+      "required_fields": ["pageId", "spaceId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/move-page.dto.ts",
+          "name": "MovePageToSpaceDto",
+          "fields": ["pageId", "spaceId"],
+          "required": ["pageId", "spaceId"]
+        }
+      ]
+    },
+    "pages.recent": {
+      "method": "POST",
+      "path": "/pages/recent",
+      "edition": "community",
+      "allowed_fields": ["adminView", "beforeCursor", "cursor", "limit", "query", "spaceId"],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/recent-page.dto.ts",
+          "name": "RecentPageDto",
+          "fields": ["spaceId"],
+          "required": []
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/database/pagination/pagination-options.ts",
+          "name": "PaginationOptions",
+          "fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+          "required": []
+        }
+      ]
+    },
+    "pages.sidebar": {
+      "method": "POST",
+      "path": "/pages/sidebar-pages",
+      "edition": "community",
+      "allowed_fields": [
+        "adminView",
+        "beforeCursor",
+        "cursor",
+        "limit",
+        "pageId",
+        "query",
+        "spaceId"
+      ],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/sidebar-page.dto.ts",
+          "name": "SidebarPageDto",
+          "fields": ["pageId", "spaceId"],
+          "required": []
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/database/pagination/pagination-options.ts",
+          "name": "PaginationOptions",
+          "fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+          "required": []
+        }
+      ]
+    },
+    "pages.update": {
+      "method": "POST",
+      "path": "/pages/update",
+      "edition": "community",
+      "allowed_fields": [
+        "content",
+        "format",
+        "icon",
+        "operation",
+        "pageId",
+        "parentPageId",
+        "spaceId",
+        "title"
+      ],
+      "required_fields": ["pageId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/create-page.dto.ts",
+          "name": "CreatePageDto",
+          "fields": ["content", "format", "icon", "parentPageId", "spaceId", "title"],
+          "required": ["spaceId"],
+          "all_optional": true
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/update-page.dto.ts",
+          "name": "UpdatePageDto",
+          "fields": ["content", "format", "operation", "pageId"],
+          "required": ["pageId"]
+        }
+      ]
+    },
+    "search.pages": {
+      "method": "POST",
+      "path": "/search",
+      "edition": "community",
+      "allowed_fields": ["creatorId", "limit", "offset", "query", "shareId", "spaceId"],
+      "required_fields": ["query"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/search/search.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/search/dto/search.dto.ts",
+          "name": "SearchDTO",
+          "fields": ["creatorId", "limit", "offset", "query", "shareId", "spaceId"],
+          "required": ["query"]
+        }
+      ]
+    },
+    "spaces.create": {
+      "method": "POST",
+      "path": "/spaces/create",
+      "edition": "community",
+      "allowed_fields": ["description", "name", "slug"],
+      "required_fields": ["name", "slug"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/space/space.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/space/dto/create-space.dto.ts",
+          "name": "CreateSpaceDto",
+          "fields": ["description", "name", "slug"],
+          "required": ["name", "slug"]
+        }
+      ]
+    },
+    "spaces.info": {
+      "method": "POST",
+      "path": "/spaces/info",
+      "edition": "community",
+      "allowed_fields": ["spaceId"],
+      "required_fields": ["spaceId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/space/space.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/space/dto/space-id.dto.ts",
+          "name": "SpaceIdDto",
+          "fields": ["spaceId"],
+          "required": ["spaceId"]
+        }
+      ]
+    },
+    "spaces.list": {
+      "method": "POST",
+      "path": "/spaces",
+      "edition": "community",
+      "allowed_fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/space/space.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/database/pagination/pagination-options.ts",
+          "name": "PaginationOptions",
+          "fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+          "required": []
+        }
+      ]
+    },
+    "spaces.update": {
+      "method": "POST",
+      "path": "/spaces/update",
+      "edition": "community",
+      "allowed_fields": [
+        "allowViewerComments",
+        "description",
+        "disablePublicSharing",
+        "name",
+        "slug",
+        "spaceId"
+      ],
+      "required_fields": ["spaceId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/space/space.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/space/dto/create-space.dto.ts",
+          "name": "CreateSpaceDto",
+          "fields": ["description", "name", "slug"],
+          "required": ["name", "slug"],
+          "all_optional": true
+        },
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/space/dto/update-space.dto.ts",
+          "name": "UpdateSpaceDto",
+          "fields": ["allowViewerComments", "disablePublicSharing", "spaceId"],
+          "required": ["spaceId"]
+        }
+      ]
+    },
+    "users.me": {
+      "method": "POST",
+      "path": "/users/me",
+      "edition": "community",
+      "allowed_fields": [],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/user/user.controller.ts"
+      }
+    },
+    "workspace.info": {
+      "method": "POST",
+      "path": "/workspace/info",
+      "edition": "community",
+      "allowed_fields": [],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/workspace/controllers/workspace.controller.ts"
+      }
+    },
+    "workspace.members": {
+      "method": "POST",
+      "path": "/workspace/members",
+      "edition": "community",
+      "allowed_fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+      "required_fields": [],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/workspace/controllers/workspace.controller.ts"
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/database/pagination/pagination-options.ts",
+          "name": "PaginationOptions",
+          "fields": ["adminView", "beforeCursor", "cursor", "limit", "query"],
+          "required": []
+        }
+      ]
+    }
+  },
+  "known_drift": [
+    {
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/attachments/search",
+      "source": "src/docmost_cli/api/attachments.py",
+      "replacement": "/search-attachments",
+      "owner": "high-priority fix 2"
+    },
+    {
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/pages/content",
+      "source": "src/docmost_cli/api/pages.py",
+      "replacement": "/pages/info",
+      "owner": "high-priority fix 1"
+    },
+    {
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/pages/copy",
+      "source": "src/docmost_cli/api/pages.py",
+      "replacement": "/pages/duplicate",
+      "owner": "high-priority fix 1"
+    },
+    {
+      "kind": "request-fields",
+      "method": "POST",
+      "path": "/pages/move",
+      "fields": ["spaceId"],
+      "source": "src/docmost_cli/api/pages.py",
+      "replacement": "/pages/move-to-space",
+      "owner": "high-priority fix 1"
+    },
+    {
+      "kind": "request-fields",
+      "method": "POST",
+      "path": "/search",
+      "fields": ["cursor", "type"],
+      "source": "src/docmost_cli/api/search.py",
+      "replacement": "offset and dedicated attachment search",
+      "owner": "high-priority fix 2"
+    }
+  ]
+}

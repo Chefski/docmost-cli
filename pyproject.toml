@@ -64,6 +64,9 @@ packages = ["src/docmost_cli"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: opt-in tests that contact a real Docmost instance",
+]
 
 [tool.mypy]
 python_version = "3.11"

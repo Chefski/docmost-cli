@@ -7,6 +7,16 @@ import pytest
 from docmost_cli.config.settings import DocmostSettings
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register the explicit opt-in for real Docmost integration tests."""
+    parser.addoption(
+        "--run-docmost-integration",
+        action="store_true",
+        default=False,
+        help="run tests against the explicitly configured Docmost instance",
+    )
+
+
 @pytest.fixture()
 def tmp_config(tmp_path: Path) -> Path:
     """Create a temp config file with default profile."""

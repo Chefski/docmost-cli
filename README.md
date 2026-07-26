@@ -214,6 +214,9 @@ uv pip install -e ".[dev]"
 # Run tests
 pytest
 
+# Check the pinned CLI contract against a Docmost source checkout
+python scripts/check_docmost_contracts.py --docmost-repo ../docmost
+
 # Run tests with coverage
 pytest --cov=docmost_cli
 
@@ -224,6 +227,11 @@ ruff format src/ tests/
 # Type checking
 mypy src/
 ```
+
+Real-instance tests are disabled by default and require both an explicit command-line opt-in
+and dedicated test-instance configuration. See
+[Contract and integration testing](docs/contract-testing.md) for the safety gates, Community
+and Enterprise setup, and cleanup behavior.
 
 ## Acknowledgments
 

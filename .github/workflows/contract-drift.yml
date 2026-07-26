@@ -1,0 +1,63 @@
+name: Docmost contract drift
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/contract-drift.yml"
+      - "scripts/check_docmost_contracts.py"
+      - "src/docmost_cli/api/**"
+      - "tests/contracts/**"
+      - "tests/integration/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/contract-drift.yml"
+      - "scripts/check_docmost_contracts.py"
+      - "src/docmost_cli/api/**"
+      - "tests/contracts/**"
+      - "tests/integration/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out docmost-cli
+        uses: actions/checkout@v4
+
+      - name: Check out pinned Docmost contract sources
+        uses: actions/checkout@v4
+        with:
+          repository: docmost/docmost
+          ref: 70d2ff86856f0ffa66b5c64d0dadac80133c8b5c
+          path: .docmost-upstream
+          sparse-checkout: |
+            apps/client/src/features/search
+            apps/server/src/core
+            apps/server/src/database
+            apps/server/src/integrations/export
+            apps/server/src/integrations/import
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install test dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Check upstream contract
+        run: python scripts/check_docmost_contracts.py --docmost-repo .docmost-upstream
+
+      - name: Run contract tests
+        run: pytest tests/contracts
+
+      - name: Lint contract test layer
+        run: ruff check scripts tests/contracts tests/integration
