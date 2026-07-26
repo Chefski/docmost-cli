@@ -262,9 +262,17 @@ class DocmostClient:
             if isinstance(file_value, (str, bytes)):
                 continue
             try:
+                seekable = getattr(file_value, "seekable", None)
+                if not callable(seekable) or not seekable():
+                    return False
                 position = file_value.tell()
+                file_value.seek(0)
+                if file_value.tell() != 0:
+                    return False
                 file_value.seek(position)
-            except (AttributeError, OSError, TypeError):
+                if file_value.tell() != position:
+                    return False
+            except (AttributeError, OSError, TypeError, ValueError):
                 return False
         return True
 

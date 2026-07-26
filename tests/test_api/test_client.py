@@ -354,6 +354,43 @@ class TestMutationSafeRetries:
         assert len(requests) == 1
         assert b"complete body" in requests[0].content
 
+    def test_current_offset_only_multipart_stream_disables_retry(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        url = "https://docs.example.com/api/pages/raw"
+        httpx_mock.add_response(url=url, status_code=500)
+
+        class CurrentOffsetOnlyFile:
+            def __init__(self) -> None:
+                self._stream = io.BytesIO(b"complete body")
+
+            def read(self, size: int = -1) -> bytes:
+                return self._stream.read(size)
+
+            def seekable(self) -> bool:
+                return False
+
+            def tell(self) -> int:
+                return self._stream.tell()
+
+            def seek(self, offset: int, whence: int = 0) -> int:
+                if whence != 0 or offset != self._stream.tell():
+                    raise OSError("cannot rewind")
+                return offset
+
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            client.request(
+                "PUT",
+                "/pages/raw",
+                files={"file": ("report.txt", CurrentOffsetOnlyFile(), "text/plain")},
+            )
+
+        requests = httpx_mock.get_requests()
+        assert len(requests) == 1
+        assert b"complete body" in requests[0].content
+
 
 class TestAuthenticationReplay:
     def test_one_shot_stream_401_does_not_replay_or_reauthenticate(
