@@ -13,7 +13,9 @@
       "required_fields": ["email", "password"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/auth/auth.controller.ts"
+        "file": "apps/server/src/core/auth/auth.controller.ts",
+        "handler": "login",
+        "body_types": ["LoginDto"]
       },
       "schema_sources": [
         {
@@ -33,7 +35,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/attachment/attachment.controller.ts"
+        "file": "apps/server/src/core/attachment/attachment.controller.ts",
+        "handler": "getFile",
+        "body_types": []
       }
     },
     "attachments.info": {
@@ -44,7 +48,9 @@
       "required_fields": ["attachmentId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/attachment/attachment.controller.ts"
+        "file": "apps/server/src/core/attachment/attachment.controller.ts",
+        "handler": "getAttachmentInfo",
+        "body_types": ["AttachmentInfoDto"]
       },
       "schema_sources": [
         {
@@ -86,7 +92,9 @@
       "file_fields": ["file"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/attachment/attachment.controller.ts"
+        "file": "apps/server/src/core/attachment/attachment.controller.ts",
+        "handler": "uploadFile",
+        "body_types": []
       },
       "schema_sources": [
         {
@@ -113,7 +121,9 @@
       "required_fields": ["content", "pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/comment/comment.controller.ts"
+        "file": "apps/server/src/core/comment/comment.controller.ts",
+        "handler": "create",
+        "body_types": ["CreateCommentDto"]
       },
       "schema_sources": [
         {
@@ -140,7 +150,9 @@
       "required_fields": ["pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/comment/comment.controller.ts"
+        "file": "apps/server/src/core/comment/comment.controller.ts",
+        "handler": "findPageComments",
+        "body_types": ["PageIdDto", "PaginationOptions"]
       },
       "schema_sources": [
         {
@@ -167,7 +179,9 @@
       "required_fields": ["commentId", "content"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/comment/comment.controller.ts"
+        "file": "apps/server/src/core/comment/comment.controller.ts",
+        "handler": "update",
+        "body_types": ["UpdateCommentDto"]
       },
       "schema_sources": [
         {
@@ -187,7 +201,9 @@
       "required_fields": ["pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "delete",
+        "body_types": ["DeletePageDto"]
       },
       "schema_sources": [
         {
@@ -214,7 +230,9 @@
       "required_fields": ["pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "duplicatePage",
+        "body_types": ["DuplicatePageDto"]
       },
       "schema_sources": [
         {
@@ -234,7 +252,9 @@
       "required_fields": ["format", "pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/integrations/export/export.controller.ts"
+        "file": "apps/server/src/integrations/export/export.controller.ts",
+        "handler": "exportPage",
+        "body_types": ["ExportPageDto"]
       },
       "schema_sources": [
         {
@@ -254,7 +274,9 @@
       "required_fields": ["pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "getPageHistory",
+        "body_types": ["PageIdDto", "PaginationOptions"]
       },
       "schema_sources": [
         {
@@ -282,7 +304,9 @@
       "file_fields": ["file"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/integrations/import/import.controller.ts"
+        "file": "apps/server/src/integrations/import/import.controller.ts",
+        "handler": "importPage",
+        "body_types": []
       },
       "schema_sources": [
         {
@@ -303,7 +327,9 @@
       "file_fields": ["file"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/integrations/import/import.controller.ts"
+        "file": "apps/server/src/integrations/import/import.controller.ts",
+        "handler": "importZip",
+        "body_types": []
       },
       "schema_sources": [
         {
@@ -323,7 +349,9 @@
       "required_fields": ["pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "getPage",
+        "body_types": ["PageInfoDto"]
       },
       "schema_sources": [
         {
@@ -350,7 +378,9 @@
       "required_fields": ["pageId", "position"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "movePage",
+        "body_types": ["MovePageDto"]
       },
       "schema_sources": [
         {
@@ -370,7 +400,9 @@
       "required_fields": ["pageId", "spaceId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "movePageToSpace",
+        "body_types": ["MovePageToSpaceDto"]
       },
       "schema_sources": [
         {
@@ -390,7 +422,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "getRecentPages",
+        "body_types": ["PaginationOptions", "RecentPageDto"]
       },
       "schema_sources": [
         {
@@ -425,7 +459,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "getSidebarPages",
+        "body_types": ["PaginationOptions", "SidebarPageDto"]
       },
       "schema_sources": [
         {
@@ -461,7 +497,9 @@
       "required_fields": ["pageId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/page/page.controller.ts"
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "update",
+        "body_types": ["UpdatePageDto"]
       },
       "schema_sources": [
         {
@@ -489,7 +527,9 @@
       "required_fields": ["query"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/search/search.controller.ts"
+        "file": "apps/server/src/core/search/search.controller.ts",
+        "handler": "pageSearch",
+        "body_types": ["SearchDTO"]
       },
       "schema_sources": [
         {
@@ -509,7 +549,9 @@
       "required_fields": ["name", "slug"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/space/space.controller.ts"
+        "file": "apps/server/src/core/space/space.controller.ts",
+        "handler": "createSpace",
+        "body_types": ["CreateSpaceDto"]
       },
       "schema_sources": [
         {
@@ -529,7 +571,9 @@
       "required_fields": ["spaceId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/space/space.controller.ts"
+        "file": "apps/server/src/core/space/space.controller.ts",
+        "handler": "getSpaceInfo",
+        "body_types": ["SpaceIdDto"]
       },
       "schema_sources": [
         {
@@ -549,7 +593,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/space/space.controller.ts"
+        "file": "apps/server/src/core/space/space.controller.ts",
+        "handler": "getWorkspaceSpaces",
+        "body_types": ["PaginationOptions"]
       },
       "schema_sources": [
         {
@@ -576,7 +622,9 @@
       "required_fields": ["spaceId"],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/space/space.controller.ts"
+        "file": "apps/server/src/core/space/space.controller.ts",
+        "handler": "updateSpace",
+        "body_types": ["UpdateSpaceDto"]
       },
       "schema_sources": [
         {
@@ -604,7 +652,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/user/user.controller.ts"
+        "file": "apps/server/src/core/user/user.controller.ts",
+        "handler": "getUserInfo",
+        "body_types": []
       }
     },
     "workspace.info": {
@@ -615,7 +665,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/workspace/controllers/workspace.controller.ts"
+        "file": "apps/server/src/core/workspace/controllers/workspace.controller.ts",
+        "handler": "getWorkspace",
+        "body_types": []
       }
     },
     "workspace.members": {
@@ -626,7 +678,9 @@
       "required_fields": [],
       "upstream": {
         "kind": "controller",
-        "file": "apps/server/src/core/workspace/controllers/workspace.controller.ts"
+        "file": "apps/server/src/core/workspace/controllers/workspace.controller.ts",
+        "handler": "getWorkspaceMembers",
+        "body_types": ["PaginationOptions"]
       },
       "schema_sources": [
         {

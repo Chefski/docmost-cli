@@ -21,6 +21,12 @@ class Route:
     path: str
 
 
+@dataclass(frozen=True)
+class HandlerBinding:
+    name: str
+    body_types: frozenset[str]
+
+
 def _normalize_path(*parts: str) -> str:
     joined = "/".join(part.strip("/") for part in parts if part.strip("/"))
     return f"/{joined}" if joined else "/"
@@ -40,15 +46,31 @@ def _quoted_argument(raw: str) -> str:
     return match.group(2)
 
 
-def controller_routes(source: str) -> set[Route]:
-    """Extract simple NestJS GET/POST routes from one controller."""
+def _balanced_delimited(source: str, start: int, opening: str, closing: str) -> str:
+    opening_index = source.find(opening, start)
+    if opening_index < 0:
+        raise AssertionError(f"declaration has no opening {opening}")
+    depth = 0
+    for index in range(opening_index, len(source)):
+        character = source[index]
+        if character == opening:
+            depth += 1
+        elif character == closing:
+            depth -= 1
+            if depth == 0:
+                return source[opening_index + 1 : index]
+    raise AssertionError(f"declaration has no closing {closing}")
+
+
+def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
+    """Extract simple NestJS GET/POST routes and their handler body types."""
     controller_match = re.search(r"@Controller\((.*?)\)", source, re.DOTALL)
     if not controller_match:
         raise AssertionError("controller source has no @Controller decorator")
     raw_prefix = controller_match.group(1).strip()
     prefix = _quoted_argument(raw_prefix) if raw_prefix else ""
 
-    routes: set[Route] = set()
+    bindings: dict[Route, HandlerBinding] = {}
     for match in re.finditer(r"@(Get|Post)\((.*?)\)", source, re.DOTALL):
         method = match.group(1).upper()
         raw_path = match.group(2).strip()
@@ -60,24 +82,29 @@ def controller_routes(source: str) -> set[Route]:
             continue
         else:
             path = _quoted_argument(raw_path)
-        routes.add(Route(method=method, path=_normalize_path(prefix, path)))
-    return routes
+        handler_match = re.search(
+            r"^\s{2}(?:async\s+)?([A-Za-z_]\w*)\s*\(",
+            source[match.end() :],
+            re.MULTILINE,
+        )
+        if not handler_match:
+            raise AssertionError(f"{method} {path or '/'} has no handler")
+        handler_name = handler_match.group(1)
+        handler_start = match.end() + handler_match.start()
+        signature = _balanced_delimited(source, handler_start, "(", ")")
+        body_types = frozenset(
+            re.findall(
+                r"@Body\([^)]*\)\s*[A-Za-z_]\w*\s*:\s*([A-Za-z_]\w*)",
+                signature,
+            )
+        )
+        route = Route(method=method, path=_normalize_path(prefix, path))
+        bindings[route] = HandlerBinding(handler_name, body_types)
+    return bindings
 
 
 def _balanced_block(source: str, start: int) -> str:
-    opening = source.find("{", start)
-    if opening < 0:
-        raise AssertionError("declaration has no opening brace")
-    depth = 0
-    for index in range(opening, len(source)):
-        character = source[index]
-        if character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                return source[opening + 1 : index]
-    raise AssertionError("declaration has no closing brace")
+    return _balanced_delimited(source, start, "{", "}")
 
 
 def class_fields(source: str, class_name: str) -> tuple[set[str], set[str]]:
@@ -109,7 +136,8 @@ def class_fields(source: str, class_name: str) -> tuple[set[str], set[str]]:
             name, question_mark = field_match.groups()
             fields.add(name)
             decorators = " ".join(pending_decorators)
-            if question_mark is None and "@IsOptional" not in decorators:
+            has_initializer = "=" in line
+            if question_mark is None and "@IsOptional" not in decorators and not has_initializer:
                 required.add(name)
         pending_decorators = []
         decorator_depth = 0
@@ -135,7 +163,10 @@ def interface_fields(source: str, interface_name: str) -> tuple[set[str], set[st
     return fields, required
 
 
-def handler_multipart_fields(source: str, handler_name: str) -> set[str]:
+def handler_multipart_fields(
+    source: str,
+    handler_name: str,
+) -> tuple[set[str], set[str]]:
     match = re.search(
         rf"\b(?:async\s+)?{re.escape(handler_name)}\s*\(",
         source,
@@ -143,7 +174,15 @@ def handler_multipart_fields(source: str, handler_name: str) -> set[str]:
     if not match:
         raise AssertionError(f"handler {handler_name} not found")
     body = _balanced_block(source, match.end())
-    return set(re.findall(r"file\.fields\?\.([A-Za-z_]\w*)", body))
+    fields = set(re.findall(r"file\.fields\?\.([A-Za-z_]\w*)", body))
+    required = set(re.findall(r"if\s*\(\s*!([A-Za-z_]\w*)\s*\)", body))
+    required.update(
+        re.findall(
+            r"if\s*\(\s*![A-Za-z_]\w*\.includes\(([A-Za-z_]\w*)\)",
+            body,
+        )
+    )
+    return fields, required & fields
 
 
 def load_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
@@ -161,11 +200,27 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
             source = _read(source_path)
             if upstream["kind"] == "controller":
                 route = Route(operation["method"], operation["path"])
-                if route not in controller_routes(source):
+                bindings = controller_bindings(source)
+                if route not in bindings:
                     errors.append(
                         f"{operation_name}: {route.method} {route.path} is absent from "
                         f"{upstream['file']}"
                     )
+                else:
+                    binding = bindings[route]
+                    expected_handler = upstream["handler"]
+                    if binding.name != expected_handler:
+                        errors.append(
+                            f"{operation_name}: route handler changed; expected "
+                            f"{expected_handler}, got {binding.name}"
+                        )
+                    expected_body_types = frozenset(upstream.get("body_types", []))
+                    if binding.body_types != expected_body_types:
+                        errors.append(
+                            f"{operation_name}: handler body types changed; expected "
+                            f"{sorted(expected_body_types)}, got "
+                            f"{sorted(binding.body_types)}"
+                        )
             elif upstream["kind"] == "client-reference":
                 route_literal = upstream["route_literal"]
                 if route_literal not in source:
@@ -194,11 +249,10 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                         schema["name"],
                     )
                 elif schema["kind"] == "multipart-handler":
-                    actual_fields = handler_multipart_fields(
+                    actual_fields, actual_required = handler_multipart_fields(
                         schema_source,
                         schema["name"],
                     )
-                    actual_required = set(schema.get("required", []))
                 else:
                     raise AssertionError(f"unsupported schema source kind {schema['kind']!r}")
             except AssertionError as exc:
@@ -212,7 +266,7 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                     f"{operation_name}: {schema['name']} fields changed; "
                     f"expected {sorted(expected_fields)}, got {sorted(actual_fields)}"
                 )
-            if schema["kind"] != "multipart-handler" and actual_required != expected_required:
+            if actual_required != expected_required:
                 errors.append(
                     f"{operation_name}: {schema['name']} required fields changed; "
                     f"expected {sorted(expected_required)}, got {sorted(actual_required)}"

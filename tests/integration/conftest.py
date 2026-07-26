@@ -85,6 +85,7 @@ def created_resources(integration_client: DocmostClient) -> Iterator[CreatedReso
     resources = CreatedResources()
     yield resources
 
+    cleanup_failures: list[str] = []
     for page_id in reversed(resources.page_ids):
         response = integration_client.post_raw(
             "/pages/delete",
@@ -92,15 +93,22 @@ def created_resources(integration_client: DocmostClient) -> Iterator[CreatedReso
             raise_on_error=False,
         )
         if not response.is_success:
-            integration_client.post_raw(
+            response = integration_client.post_raw(
                 "/pages/delete",
                 json={"pageId": page_id},
                 raise_on_error=False,
             )
+            if not response.is_success:
+                cleanup_failures.append(f"page {page_id} (HTTP {response.status_code})")
 
     for space_id in reversed(resources.space_ids):
-        integration_client.post_raw(
+        response = integration_client.post_raw(
             "/spaces/delete",
             json={"spaceId": space_id},
             raise_on_error=False,
         )
+        if not response.is_success:
+            cleanup_failures.append(f"space {space_id} (HTTP {response.status_code})")
+
+    if cleanup_failures:
+        pytest.fail("Docmost integration cleanup failed for: " + ", ".join(cleanup_failures))

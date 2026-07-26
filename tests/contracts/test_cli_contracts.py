@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import httpx
 import pytest
 
 from docmost_cli.api.attachments import (
@@ -16,6 +17,7 @@ from docmost_cli.api.attachments import (
     get_attachment_info,
     upload_attachment,
 )
+from docmost_cli.api.auth import SessionAuth
 from docmost_cli.api.comments import create_comment, list_comments, update_comment
 from docmost_cli.api.pages import (
     delete_page,
@@ -263,6 +265,35 @@ def test_known_request_field_drift_matches_current_helpers() -> None:
         if entry["kind"] == "request-fields"
     }
     assert observed == expected
+
+
+def test_session_login_request_matches_pinned_contract(
+    httpx_mock: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    httpx_mock.add_response(
+        url="https://docs.example.test/api/auth/login",
+        json={"token": "test-token"},
+    )
+    auth = SessionAuth(
+        "https://docs.example.test",
+        "contract@example.test",
+        "secret",
+    )
+    with httpx.Client() as client:
+        auth.refresh(client)
+
+    recorded = httpx_mock.get_requests()
+    assert len(recorded) == 1
+    login_request = recorded[0]
+    request = Request(
+        login_request.method,
+        login_request.url.path.removeprefix("/api"),
+        frozenset(json.loads(login_request.content).keys()),
+    )
+    _assert_request_matches("auth.login", request)
 
 
 @pytest.mark.parametrize(

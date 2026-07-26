@@ -32,6 +32,9 @@ Real-instance tests always skip unless `--run-docmost-integration` is passed. Su
 credentials alone is not enough. Community authentication uses email and password; Enterprise
 may use an API key.
 
+Tests that depend on an operation in `known_drift` also skip with the owning fix in the reason.
+Removing a resolved allowlist entry automatically activates its live coverage.
+
 Read-only Community example:
 
 ```bash

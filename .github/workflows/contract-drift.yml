@@ -56,8 +56,8 @@ jobs:
       - name: Check upstream contract
         run: python scripts/check_docmost_contracts.py --docmost-repo .docmost-upstream
 
-      - name: Run contract tests
-        run: pytest tests/contracts
+      - name: Run contract and integration collection tests
+        run: pytest tests/contracts tests/integration
 
       - name: Lint contract test layer
         run: ruff check scripts tests/contracts tests/integration
