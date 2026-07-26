@@ -277,13 +277,24 @@ def get_page_content(client: DocmostClient, page_id: str) -> dict[str, Any]:
     # Get page info first (needed for metadata and fallback content)
     info = get_page_info(client, page_id)
 
-    # Try Enterprise content endpoint (silently — may not exist on Community)
+    # Current Docmost returns content and updatedAt atomically from /pages/info.
+    # Prefer that representation so sync callers can pair it with a canonical
+    # conversion from the same revision.
+    if isinstance(info.get("content"), dict):
+        return info
+
+    # Try Enterprise content endpoint (silently — may not exist on Community).
+    # Older endpoint responses do not identify the content revision, so clear
+    # updatedAt rather than letting callers assume the earlier info timestamp
+    # belongs to these separately fetched bytes.
     response = client.post_raw("/pages/content", json={"pageId": page_id}, raise_on_error=False)
     if response.is_success:
         try:
             content_data = response.json()
             data = content_data.get("data", content_data)
             info["content"] = data.get("content", data)
+            content_updated_at = data.get("updatedAt") if isinstance(data, dict) else None
+            info["updatedAt"] = content_updated_at if isinstance(content_updated_at, str) else None
             return info
         except (ValueError, KeyError):
             pass

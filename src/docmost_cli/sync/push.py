@@ -234,7 +234,7 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
-            rich_content=rich_content if isinstance(rich_content, dict) else None,
+            rich_content=rich_content,
         )
         result.updated += 1
 

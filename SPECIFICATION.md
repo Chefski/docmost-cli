@@ -293,6 +293,7 @@ docmost-cli sync status <space> [--dir PATH]               # Show changes since 
 - New local file/image links are uploaded to the owning page before its content is updated
 - Changed attachment bytes use `/files/upload` with the existing attachment ID, preserving URLs
 - Pull requests `format: markdown` from `/pages/info`, using Docmost's own serializer
+- Raw and Markdown responses must have the same `updatedAt`; concurrent edits are retried
 - Pull analyzes the raw JSON and records features that cannot round-trip through Markdown
 - Push preflights all replacements and aborts before mutation when protected features are present
 - Title, icon, and parent-only updates do not replace content and therefore remain allowed

@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from docmost_cli.sync.diff import SyncDiff
 
 __all__ = [
+    "PageRevisionChangedError",
     "RichContentConflict",
     "analyze_prosemirror",
     "build_pulled_rich_content_state",
@@ -58,16 +59,18 @@ _MARKDOWN_NODES = {
     "callout",
     "mathInline",
     "mathBlock",
+    "attachment",
 }
 _MARKDOWN_MARKS = {"bold", "italic", "strike", "code", "link"}
 _MARKDOWN_LINK_RE = re.compile(
-    r"(?P<prefix>!?\[[^\]]*\]\()"
-    r"(?P<destination><[^>]+>|[^\s)]+)"
-    r"(?P<suffix>(?:\s+(?:\"[^\"]*\"|'[^']*'))?\))"
+    r"(?P<prefix>!?\[(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])*\]\()"
+    r"(?P<destination><(?:\\.|[^>])+>|(?:\\.|[^\s()\\]|\((?:\\.|[^()\\])*\))+)"
+    r"(?P<suffix>(?:\s+(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'))?\))"
 )
 _SERVER_ATTACHMENT_URL_RE = re.compile(
     r"^(?:https?://[^/\s)>]+)?/(?:api/)?files/(?P<attachment_id>[^/]+)/[^\s)>\"']+$"
 )
+_CANONICAL_MARKDOWN_UNAVAILABLE = frozenset({400, 404})
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,10 @@ class RichContentConflict:
     snapshot_path: str | None
 
 
+class PageRevisionChangedError(RuntimeError):
+    """The raw and canonical page responses describe different revisions."""
+
+
 def analyze_prosemirror(content: object) -> tuple[str, ...]:
     """Return author-visible features that cannot round-trip through Markdown.
 
@@ -92,6 +99,8 @@ def analyze_prosemirror(content: object) -> tuple[str, ...]:
         return ("content:invalid-prosemirror",)
 
     features: set[str] = set()
+    generated_node_ids: set[str] = set()
+    fragment_targets: set[str] = set()
 
     def walk(node: object) -> None:
         if not isinstance(node, dict):
@@ -104,6 +113,11 @@ def analyze_prosemirror(content: object) -> tuple[str, ...]:
         elif node_type not in _MARKDOWN_NODES:
             features.add(f"node:{node_type}")
         else:
+            if node_type in {"paragraph", "heading"}:
+                attrs = node.get("attrs")
+                node_id = attrs.get("id") if isinstance(attrs, dict) else None
+                if isinstance(node_id, str) and node_id:
+                    generated_node_ids.add(node_id)
             _check_node_attributes(node_type, node.get("attrs"), features)
             _check_node_structure(node_type, node.get("content"), features)
 
@@ -113,7 +127,7 @@ def analyze_prosemirror(content: object) -> tuple[str, ...]:
                 features.add("content:invalid-marks")
             else:
                 for mark in marks:
-                    _check_mark(mark, features)
+                    _check_mark(mark, features, fragment_targets)
 
         children = node.get("content", [])
         if children is not None:
@@ -124,23 +138,44 @@ def analyze_prosemirror(content: object) -> tuple[str, ...]:
                     walk(child)
 
     walk(content)
+    if generated_node_ids & fragment_targets:
+        features.add("reference:generated-node-id")
     return tuple(sorted(features))
 
 
-def fetch_canonical_markdown(client: DocmostClient, page_id: str) -> str | None:
+def fetch_canonical_markdown(
+    client: DocmostClient,
+    page_id: str,
+    *,
+    expected_updated_at: str | None = None,
+) -> str | None:
     """Ask Docmost to serialize a page with its canonical Markdown converter.
 
     This read-only POST uses the client's session-refresh and replay-safe retry
-    path. ``None`` indicates a successful response without Markdown content.
+    path. When ``expected_updated_at`` is supplied, the response must describe
+    that same page revision. ``None`` indicates a successful response without
+    Markdown content.
+
+    Raises:
+        PageRevisionChangedError: If the response revision is missing or changed.
     """
-    payload = client.post(
+    response = client.post_raw(
         "/pages/info",
         json={"pageId": page_id, "format": "markdown"},
         retry_safe=True,
+        allowed_error_statuses=_CANONICAL_MARKDOWN_UNAVAILABLE,
     )
+    if response.status_code in _CANONICAL_MARKDOWN_UNAVAILABLE:
+        return None
+    try:
+        payload = response.json()
+    except ValueError:
+        return None
     data = payload.get("data", payload) if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         return None
+    if expected_updated_at is not None and data.get("updatedAt") != expected_updated_at:
+        raise PageRevisionChangedError(page_id)
     markdown = data.get("content")
     return markdown if isinstance(markdown, str) else None
 
@@ -247,7 +282,11 @@ def find_rich_content_conflicts(
     return conflicts
 
 
-def _check_mark(mark: object, features: set[str]) -> None:
+def _check_mark(
+    mark: object,
+    features: set[str],
+    fragment_targets: set[str],
+) -> None:
     if not isinstance(mark, dict):
         features.add("content:invalid-mark")
         return
@@ -261,6 +300,9 @@ def _check_mark(mark: object, features: set[str]) -> None:
     if mark_type == "link":
         attrs = mark.get("attrs")
         if isinstance(attrs, dict):
+            href = attrs.get("href")
+            if isinstance(href, str) and href.startswith("#") and len(href) > 1:
+                fragment_targets.add(unquote(href[1:]))
             _flag_extra_attributes(
                 "mark:link",
                 attrs,
@@ -321,8 +363,34 @@ def _check_node_attributes(
             "placeholder",
         }
         _flag_nondefault(raw_attrs, "align", {None, "", "center"}, node_type, features)
-        for attr in ("title", "width", "height", "aspectRatio", "placeholder"):
+        for attr in ("width", "height", "aspectRatio", "placeholder"):
             _flag_nondefault(raw_attrs, attr, {None, "", 0}, node_type, features)
+        attachment_id = raw_attrs.get("attachmentId")
+        source = raw_attrs.get("src")
+        is_attachment = (
+            isinstance(attachment_id, str)
+            and bool(attachment_id)
+            or isinstance(source, str)
+            and _SERVER_ATTACHMENT_URL_RE.fullmatch(source) is not None
+        )
+        if is_attachment:
+            _flag_nondefault(raw_attrs, "title", {None, ""}, node_type, features)
+    elif node_type == "attachment":
+        allowed = {"url", "name", "mime", "size", "attachmentId", "placeholder"}
+        _flag_nondefault(raw_attrs, "placeholder", {None, ""}, node_type, features)
+        attachment_id = raw_attrs.get("attachmentId")
+        attachment_url = raw_attrs.get("url")
+        server_match = (
+            _SERVER_ATTACHMENT_URL_RE.fullmatch(attachment_url)
+            if isinstance(attachment_url, str)
+            else None
+        )
+        if server_match is None or (
+            isinstance(attachment_id, str)
+            and attachment_id
+            and unquote(server_match.group("attachment_id")) != attachment_id
+        ):
+            features.add("attribute:attachment.reference")
     elif node_type == "callout":
         allowed = {"type", "icon"}
         _flag_nondefault(raw_attrs, "icon", {None, ""}, node_type, features)

@@ -4,8 +4,8 @@
 
 - Restrict automatic HTTP retries to replay-safe requests so ambiguous create, import,
   duplicate, upload, and other mutation failures cannot silently create duplicates
-- Prevent lossy sync pushes by using server-side Markdown conversion, retaining raw ProseMirror
-  snapshots, and blocking replacements of pages with unsupported rich editor features
+- Prevent lossy sync pushes by pairing server-side Markdown with same-revision raw ProseMirror
+  snapshots and blocking replacements of pages with unsupported rich editor features
 - Add page attachment upload, in-page insertion, stable URL lookup, in-place replacement, info, and download commands
 - Preserve attachments in page export/import through native portable ZIP archives
 - Preserve attachment IDs and bytes during sync using local `files/<attachment-id>/...` assets and manifest hashes

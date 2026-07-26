@@ -129,10 +129,11 @@ replaces changed assets in place, while writing the stable attachment ID back in
 content. Relative image/file links to existing local files are treated as page assets.
 
 Sync uses Docmost's server-side Markdown conversion as the canonical local representation. Every
-pull also stores the exact source ProseMirror JSON under `.docmost/raw-pages/` and records editor
-features that Markdown cannot preserve. If a local content or attachment change would replace a
-page containing protected features (for example mentions, comments, columns, transclusions,
-embeds, alignment, colors, or merged cells), `sync push` stops before making any server changes.
+pull pairs that Markdown with the same page revision's exact ProseMirror JSON, stores the raw source
+under `.docmost/raw-pages/`, and records editor features that Markdown cannot preserve. Concurrent
+page changes during pull are retried. If a local content or attachment change would replace a page
+containing protected features (for example mentions, comments, columns, transclusions, embeds,
+alignment, colors, or merged cells), `sync push` stops before making any server changes.
 Title, icon, and parent-only changes remain safe. Manifests from older CLI versions remain usable;
 run a fresh pull to enable the rich-content guard for those pages. If a successful server response
 contains no canonical Markdown, pull still produces readable compatibility output but protects

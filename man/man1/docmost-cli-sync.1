@@ -73,8 +73,9 @@ Push uploads new local file/image links and replaces changed attachment bytes
 in place, preserving stable attachment and page IDs on both editions.
 .SS Rich content safety
 Pull uses Docmost's server\-side Markdown conversion and stores the exact
-pull\-time ProseMirror JSON beneath
+same\-revision ProseMirror JSON beneath
 .IR .docmost/raw\-pages/ .
+Concurrent page changes detected during pull are retried.
 The manifest records editor features that Markdown cannot preserve, including
 mentions, comments, columns, transclusions, embeds, alignment, colors, and
 merged table cells.

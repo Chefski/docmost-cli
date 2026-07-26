@@ -178,7 +178,7 @@ def build_page_entry(
     icon: str,
     content_hash: str,
     attachment_ids: list[str] | None = None,
-    rich_content: dict[str, Any] | None = None,
+    rich_content: object | None = None,
 ) -> dict[str, Any]:
     """Build a single page entry for inclusion in the manifest.
 

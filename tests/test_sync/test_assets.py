@@ -60,6 +60,22 @@ def test_discover_local_assets_decodes_url_paths(tmp_path: Path) -> None:
     assert references[0].is_image is True
 
 
+def test_discover_local_assets_handles_escaped_and_nested_labels(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / ATTACHMENT_ID / "Launch plan.png"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"image")
+    markdown_path = asset_markdown_path(asset.relative_to(tmp_path).as_posix())
+
+    references = discover_local_assets(
+        rf"![Before \] [nested]]({markdown_path})",
+        tmp_path,
+    )
+
+    assert len(references) == 1
+    assert references[0].absolute_path == asset
+    assert references[0].label == r"Before \] [nested]"
+
+
 def test_prepare_new_image_uploads_and_embeds_stable_id(
     httpx_mock,
     tmp_path: Path,

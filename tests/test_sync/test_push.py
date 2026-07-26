@@ -792,6 +792,40 @@ class TestPushMetaChange:
 
         assert result.updated == 1
 
+    def test_metadata_update_preserves_malformed_rich_content_guard(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        body = "Same content.\n"
+        entry = build_page_entry(
+            title="Old Title",
+            filename="page.md",
+            parent_id=None,
+            icon="",
+            content_hash=compute_content_hash(body),
+            rich_content="malformed-guard",
+        )
+        target = _setup_synced_dir(tmp_path, pages={FAKE_PAGE_ID: entry})
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="New Title",
+            body=body,
+        )
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+
+        with _make_client() as client:
+            push_space(client, "eng", target)
+
+        manifest = load_manifest(target)
+        assert manifest["pages"][FAKE_PAGE_ID]["rich_content"] == "malformed-guard"
+
 
 # ---------------------------------------------------------------------------
 # push_space — move only

@@ -30,9 +30,10 @@ __all__ = [
 # Markdown image/link destinations. This intentionally targets inline links,
 # which is the format emitted by the converter and Docmost's exporter.
 _MARKDOWN_LINK_RE = re.compile(
-    r"(?P<image>!)?\[(?P<label>[^\]]*)\]\("
-    r"(?P<destination><[^>]+>|[^\s)]+)"
-    r"(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)"
+    r"(?P<image>!)?\["
+    r"(?P<label>(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])*)\]\("
+    r"(?P<destination><(?:\\.|[^>])+>|(?:\\.|[^\s()\\]|\((?:\\.|[^()\\])*\))+)"
+    r"(?:\s+(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'))?\)"
 )
 _SERVER_ATTACHMENT_RE = re.compile(r"(?:^|/)(?:api/)?files/([^/?#]+)/")
 

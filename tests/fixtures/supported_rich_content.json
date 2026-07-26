@@ -97,7 +97,7 @@
       "content": [
         {
           "type": "text",
-          "text": "print('safe')"
+          "text": "print(\"safe\")"
         }
       ]
     },

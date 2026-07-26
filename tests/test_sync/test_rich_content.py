@@ -178,6 +178,106 @@ def test_image_title_is_protected_from_attachment_html_loss() -> None:
     assert "attribute:image.title" in analyze_prosemirror(content)
 
 
+def test_external_image_title_remains_markdown_safe() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "image",
+                "attrs": {
+                    "src": "https://example.com/diagram.png",
+                    "alt": "Diagram",
+                    "title": "Architecture tooltip",
+                },
+            }
+        ],
+    }
+
+    assert analyze_prosemirror(content) == ()
+
+
+def test_link_to_generated_node_id_is_protected() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "heading",
+                "attrs": {"id": "section-id", "level": 2},
+                "content": [{"type": "text", "text": "Section"}],
+            },
+            {
+                "type": "paragraph",
+                "attrs": {"id": "link-paragraph"},
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Jump",
+                        "marks": [{"type": "link", "attrs": {"href": "#section-id"}}],
+                    }
+                ],
+            },
+        ],
+    }
+
+    assert "reference:generated-node-id" in analyze_prosemirror(content)
+
+
+def test_generic_attachment_with_stable_id_is_markdown_safe() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "attachment",
+                "attrs": {
+                    "url": "/api/files/file-id/handbook.pdf",
+                    "name": "handbook.pdf",
+                    "mime": "application/pdf",
+                    "size": 42,
+                    "attachmentId": "file-id",
+                    "placeholder": None,
+                },
+            }
+        ],
+    }
+
+    assert analyze_prosemirror(content) == ()
+
+
+def test_generic_attachment_without_stable_reference_is_protected() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "attachment",
+                "attrs": {
+                    "url": "https://example.com/handbook.pdf",
+                    "name": "handbook.pdf",
+                },
+            }
+        ],
+    }
+
+    assert "attribute:attachment.reference" in analyze_prosemirror(content)
+
+
+def test_generic_attachment_with_mismatched_stable_id_is_protected() -> None:
+    content = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "attachment",
+                "attrs": {
+                    "url": "/api/files/url-id/handbook.pdf",
+                    "name": "handbook.pdf",
+                    "attachmentId": "different-id",
+                },
+            }
+        ],
+    }
+
+    assert "attribute:attachment.reference" in analyze_prosemirror(content)
+
+
 def test_pull_state_preserves_exact_raw_snapshot(tmp_path: Path) -> None:
     content = _load_fixture("unsupported_rich_content.json")
 
@@ -193,11 +293,21 @@ def test_pull_state_preserves_exact_raw_snapshot(tmp_path: Path) -> None:
 def test_fetches_server_canonical_markdown(httpx_mock) -> None:
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/info",
-        json={"data": {"id": "page-1", "content": "# Canonical\n"}},
+        json={
+            "data": {
+                "id": "page-1",
+                "updatedAt": "revision-1",
+                "content": "# Canonical\n",
+            }
+        },
     )
 
     with _make_client() as client:
-        markdown = fetch_canonical_markdown(client, "page-1")
+        markdown = fetch_canonical_markdown(
+            client,
+            "page-1",
+            expected_updated_at="revision-1",
+        )
 
     assert markdown == "# Canonical\n"
     request = httpx_mock.get_requests()[0]
@@ -222,6 +332,18 @@ def test_canonical_markdown_retries_transient_failures(httpx_mock, monkeypatch) 
     assert len(httpx_mock.get_requests()) == 2
 
 
+def test_canonical_markdown_falls_back_when_format_is_unsupported(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        status_code=404,
+    )
+
+    with _make_client() as client:
+        markdown = fetch_canonical_markdown(client, "page-1")
+
+    assert markdown is None
+
+
 def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
     markdown = (
         "![Diagram](/api/files/image-id/diagram.png)\n"
@@ -242,6 +364,25 @@ def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
     assert "[PDF](files/pdf-id/file.pdf)" in rewritten
     assert "Literal /api/files/image-id/diagram.png remains unchanged." in rewritten
     assert "```\n/api/files/pdf-id/file.pdf\n```" in rewritten
+
+
+def test_rewrites_attachment_with_escaped_and_nested_label() -> None:
+    markdown = (
+        r"![Before \] after](/api/files/image-id/diagram.png)"
+        "\n"
+        "[Outer [inner]](/api/files/pdf-id/file.pdf)\n"
+    )
+
+    rewritten = rewrite_attachment_urls(
+        markdown,
+        {
+            "image-id": "files/image-id/diagram.png",
+            "pdf-id": "files/pdf-id/file.pdf",
+        },
+    )
+
+    assert r"![Before \] after](files/image-id/diagram.png)" in rewritten
+    assert "[Outer [inner]](files/pdf-id/file.pdf)" in rewritten
 
 
 def test_content_edit_is_blocked_when_pull_found_unsafe_features() -> None:

@@ -178,11 +178,6 @@ class TestGetPageContent:
         assert "content" in result
 
     def test_fallback_to_info(self, httpx_mock, api_key_settings) -> None:
-        # Content endpoint returns 404 (Community edition)
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
-            status_code=404,
-        )
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/info",
             json={"id": "page-1", "title": "Test", "content": {"type": "doc", "content": []}},
@@ -190,6 +185,7 @@ class TestGetPageContent:
         with DocmostClient(api_key_settings) as client:
             result = get_page_content(client, "page-1")
         assert result["id"] == "page-1"
+        assert len(httpx_mock.get_requests()) == 1
 
 
 class TestListRecentPages:
