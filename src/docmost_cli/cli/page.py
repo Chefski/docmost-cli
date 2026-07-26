@@ -242,17 +242,13 @@ def page_get_cmd(
     if raw:
         # Raw mode: reuse the page info response so metadata and content stay in sync.
         info = get_page_content(client, page_id)
-        pm_content = info.get("content")
-        if not pm_content:
-            print_error("No content available for raw output.", exit_code=1)
+        pm_content = info["content"]
         sys.stdout.write(json.dumps(pm_content, indent=2) + "\n")
         return
 
     # Normal mode: get content and convert to Markdown
     info = get_page_content(client, page_id)
-    pm_content = info.get("content")
-    if not pm_content:
-        print_error("Page has no content.", exit_code=1)
+    pm_content = info["content"]
 
     from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
 

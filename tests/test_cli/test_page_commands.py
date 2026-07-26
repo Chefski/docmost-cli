@@ -321,6 +321,27 @@ class TestPageGet:
         assert result.exit_code == 0
         assert '"type"' in result.output
 
+    def test_get_null_content_outputs_empty_markdown(self, tmp_config, httpx_mock) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/info",
+            json={"id": "page-1", "title": "Empty", "spaceId": "s1", "content": None},
+        )
+        result = runner.invoke(app, ["--config", str(tmp_config), "page", "get", "page-1"])
+        assert result.exit_code == 0
+        assert result.output == ""
+
+    def test_get_raw_null_content_outputs_json_null(self, tmp_config, httpx_mock) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/info",
+            json={"id": "page-1", "title": "Empty", "spaceId": "s1", "content": None},
+        )
+        result = runner.invoke(
+            app,
+            ["--config", str(tmp_config), "page", "get", "page-1", "--raw"],
+        )
+        assert result.exit_code == 0
+        assert result.output == "null\n"
+
     def test_get_meta(self, tmp_config, httpx_mock) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/info",
