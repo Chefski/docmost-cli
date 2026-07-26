@@ -44,7 +44,7 @@ def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
     Returns:
         Page info dict (unwrapped from data envelope).
     """
-    result = client.post("/pages/info", json={"pageId": page_id})
+    result = client.post("/pages/info", json={"pageId": page_id}, retry_safe=True)
     data = result.get("data", result)
     return data if isinstance(data, dict) else {}
 
@@ -319,7 +319,7 @@ def list_recent_pages(
         Raw API response dict.
     """
     body = build_body({"spaceId": space_id}, limit=limit, cursor=cursor)
-    return client.post("/pages/recent", json=body)
+    return client.post("/pages/recent", json=body, retry_safe=True)
 
 
 def duplicate_page(client: DocmostClient, page_id: str) -> dict[str, Any]:
@@ -371,7 +371,11 @@ def get_page_children(
     if not space_id:
         info = get_page_info(client, page_id)
         space_id = info.get("spaceId", "")
-    return client.post("/pages/sidebar-pages", json={"spaceId": space_id, "pageId": page_id})
+    return client.post(
+        "/pages/sidebar-pages",
+        json={"spaceId": space_id, "pageId": page_id},
+        retry_safe=True,
+    )
 
 
 def get_page_history(
@@ -393,7 +397,7 @@ def get_page_history(
         Raw API response dict.
     """
     body = build_body({"pageId": page_id}, limit=limit, cursor=cursor)
-    return client.post("/pages/history", json=body)
+    return client.post("/pages/history", json=body, retry_safe=True)
 
 
 def export_page(client: DocmostClient, page_id: str, fmt: str = "md") -> str:
@@ -415,7 +419,11 @@ def export_page(client: DocmostClient, page_id: str, fmt: str = "md") -> str:
 
     # Docmost expects "markdown" not "md"
     api_format = "markdown" if fmt == "md" else fmt
-    response = client.post_raw("/pages/export", json={"pageId": page_id, "format": api_format})
+    response = client.post_raw(
+        "/pages/export",
+        json={"pageId": page_id, "format": api_format},
+        retry_safe=True,
+    )
 
     buffer = io.BytesIO(response.content)
     if not zipfile.is_zipfile(buffer):
@@ -447,6 +455,7 @@ def export_page_archive(
             "includeAttachments": True,
             "includeChildren": include_children,
         },
+        retry_safe=True,
     )
     return response.content
 
@@ -463,7 +472,11 @@ def get_sidebar_pages(client: DocmostClient, space_id: str) -> dict[str, Any]:
     Returns:
         Raw API response dict with nested page tree.
     """
-    return client.post("/pages/sidebar-pages", json={"spaceId": space_id})
+    return client.post(
+        "/pages/sidebar-pages",
+        json={"spaceId": space_id},
+        retry_safe=True,
+    )
 
 
 def import_page(
