@@ -18,7 +18,7 @@ def get_current_user(client: DocmostClient) -> dict[str, Any]:
     Returns:
         Unwrapped user info dict.
     """
-    result = client.post("/users/me", json={})
+    result = client.post("/users/me", json={}, retry_safe=True)
     data = result.get("data", result)
     if not isinstance(data, dict):
         return {}

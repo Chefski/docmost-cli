@@ -34,4 +34,4 @@ def search(
         limit=limit,
         offset=offset,
     )
-    return client.post("/search", json=body)
+    return client.post("/search", json=body, retry_safe=True)

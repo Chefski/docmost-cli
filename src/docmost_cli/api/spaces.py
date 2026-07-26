@@ -32,7 +32,7 @@ def list_spaces(
         Raw API response dict.
     """
     body = build_body({}, limit=limit, cursor=cursor)
-    return client.post("/spaces", json=body)
+    return client.post("/spaces", json=body, retry_safe=True)
 
 
 def get_space_info(
@@ -52,7 +52,7 @@ def get_space_info(
         Space info dict.
     """
     if space_id:
-        result = client.post("/spaces/info", json={"spaceId": space_id})
+        result = client.post("/spaces/info", json={"spaceId": space_id}, retry_safe=True)
         data = result.get("data", result)
         return data if isinstance(data, dict) else {}
     if slug:

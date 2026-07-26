@@ -3,7 +3,7 @@
 All API calls go through this client. It handles:
 - Auth header injection via AuthStrategy
 - 401 retry (session auth re-authentication)
-- Exponential backoff retry for transient errors (429, 5xx)
+- Exponential backoff retry for transient failures on replay-safe requests
 - HTTP error translation to user-friendly messages with exit codes
 - Optional verbose debug logging
 """
@@ -11,7 +11,9 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from typing import Any, cast
 from urllib.parse import quote
 
@@ -27,13 +29,15 @@ _RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 _MAX_RETRIES = 3
 _BASE_BACKOFF = 1.0
 _BACKOFF_FACTOR = 2.0
+_MAX_RETRY_AFTER = 60.0
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE"})
 
 
 class DocmostClient:
     """HTTP client for the Docmost API.
 
     Uses httpx.Client for connection pooling. Provides authenticated
-    request methods with automatic error handling and retry logic.
+    request methods with automatic error handling and mutation-safe retry logic.
     """
 
     def __init__(self, settings: DocmostSettings, *, verbose: bool = False) -> None:
@@ -59,108 +63,154 @@ class DocmostClient:
 
     def _send_with_retry(
         self,
-        request: httpx.Request,
+        request_factory: Callable[[], httpx.Request],
         *,
+        retry_safe: bool = False,
         error_messages: Mapping[int, str] | None = None,
     ) -> httpx.Response:
-        """Send a request with auth, retry on 401/429/5xx, and error handling.
+        """Send a request with authentication and mutation-safe retry handling.
+
+        Transient transport errors, HTTP 429 responses, and HTTP 5xx responses
+        are retried only for idempotent HTTP methods or when the caller
+        explicitly marks a request as safe to replay. A single replay after a
+        session-auth 401 is allowed for every method because the rejected
+        request was not authorized.
 
         Args:
-            request: The prepared httpx request.
+            request_factory: Creates a fresh, complete request for every attempt.
+            retry_safe: Whether the caller guarantees the request is safe to replay.
             error_messages: Optional status-specific error messages.
 
         Returns:
             The HTTP response (success only; errors raise SystemExit).
         """
-        self._auth.apply(request)
+        # Rebuilding from source arguments lets httpx rewind seekable multipart
+        # fields without retaining a second encoded copy of a large upload.
+        request = request_factory()
+        can_retry_transient = retry_safe or request.method.upper() in _IDEMPOTENT_METHODS
+        transient_attempt = 0
+        reauthenticated = False
 
-        if self._verbose:
-            self._log.debug("%s %s", request.method, request.url)
-
-        start = time.monotonic()
-
-        try:
-            response = self._http.send(request)
-        except httpx.ConnectError:
-            print_error(
-                f"Cannot connect to {self._base_url}. Check the URL and your network.",
-                exit_code=1,
-            )
-        except httpx.TimeoutException:
-            print_error(
-                f"Request timed out connecting to {self._base_url}.",
-                exit_code=1,
-            )
-
-        if self._verbose:
-            elapsed = (time.monotonic() - start) * 1000
-            self._log.debug("  → %s (%dms)", response.status_code, elapsed)
-
-        # Handle 401 retry for session auth
-        if response.status_code == 401 and self._auth.can_retry():
-            try:
-                self._auth.refresh(self._http)
-            except AuthError as exc:
-                print_error(str(exc), exit_code=3)
-
-            request = self._http.build_request(
-                request.method,
-                str(request.url),
-                headers=dict(request.headers),
-                content=request.content,
-            )
+        while True:
             self._auth.apply(request)
+
+            if self._verbose and transient_attempt == 0 and not reauthenticated:
+                self._log.debug("%s %s", request.method, request.url)
+
+            start = time.monotonic()
+
             try:
                 response = self._http.send(request)
-            except httpx.HTTPError:
-                print_error("Request failed after re-authentication.", exit_code=1)
-
-        # Exponential backoff retry for transient errors
-        for attempt in range(_MAX_RETRIES):
-            if response.status_code not in _RETRYABLE_STATUS:
-                break
-
-            # Parse Retry-After header for 429
-            wait = _BASE_BACKOFF * (_BACKOFF_FACTOR**attempt)
-            if response.status_code == 429:
-                retry_after = response.headers.get("Retry-After")
-                if retry_after and retry_after.isdigit():
-                    wait = min(float(retry_after), 60.0)
-
-            if self._verbose:
-                self._log.debug(
-                    "  Retrying in %.1fs (attempt %d/%d)...",
-                    wait,
-                    attempt + 1,
-                    _MAX_RETRIES,
+            except httpx.TransportError as exc:
+                if can_retry_transient and transient_attempt < _MAX_RETRIES:
+                    wait = _BASE_BACKOFF * (_BACKOFF_FACTOR**transient_attempt)
+                    transient_attempt += 1
+                    self._log_retry(wait, transient_attempt)
+                    time.sleep(wait)
+                    request = request_factory()
+                    continue
+                self._handle_transport_error(
+                    exc,
+                    method=request.method,
+                    retry_skipped=not can_retry_transient,
                 )
 
-            time.sleep(wait)
+            if self._verbose:
+                elapsed = (time.monotonic() - start) * 1000
+                suffix = " (retry)" if transient_attempt or reauthenticated else ""
+                self._log.debug("  → %s (%dms)%s", response.status_code, elapsed, suffix)
 
-            request = self._http.build_request(
-                request.method,
-                str(request.url),
-                headers=dict(request.headers),
-                content=request.content,
-            )
-            self._auth.apply(request)
-            try:
-                response = self._http.send(request)
-            except httpx.HTTPError:
-                if attempt == _MAX_RETRIES - 1:
-                    print_error(
-                        f"Request failed after {_MAX_RETRIES} retries.",
-                        exit_code=1,
-                    )
+            # A 401 means the server rejected the request before authorizing the
+            # operation, so one replay after refreshing session auth is safe
+            # even for a mutation.
+            if response.status_code == 401 and self._auth.can_retry() and not reauthenticated:
+                response.close()
+                try:
+                    self._auth.refresh(self._http)
+                except AuthError as exc:
+                    print_error(str(exc), exit_code=3)
+                reauthenticated = True
+                request = request_factory()
                 continue
 
-            if self._verbose:
-                self._log.debug("  → %s (retry)", response.status_code)
+            if (
+                response.status_code in _RETRYABLE_STATUS
+                and can_retry_transient
+                and transient_attempt < _MAX_RETRIES
+            ):
+                wait = self._retry_delay(response, transient_attempt)
+                transient_attempt += 1
+                response.close()
+                self._log_retry(wait, transient_attempt)
+                time.sleep(wait)
+                request = request_factory()
+                continue
 
-        # Translate HTTP errors
-        self._handle_error(response, error_messages=error_messages)
+            self._handle_error(
+                response,
+                method=request.method,
+                retry_skipped=(
+                    response.status_code in _RETRYABLE_STATUS and not can_retry_transient
+                ),
+                error_messages=error_messages,
+            )
+            return response
 
-        return response
+    def _log_retry(self, wait: float, attempt: int) -> None:
+        """Log a retry delay when verbose output is enabled."""
+        if self._verbose:
+            self._log.debug(
+                "  Retrying in %.1fs (attempt %d/%d)...",
+                wait,
+                attempt,
+                _MAX_RETRIES,
+            )
+
+    @staticmethod
+    def _retry_delay(response: httpx.Response, attempt: int) -> float:
+        """Return the server-requested or exponential retry delay."""
+        default = _BASE_BACKOFF * (_BACKOFF_FACTOR**attempt)
+        retry_after = response.headers.get("Retry-After")
+        if not retry_after:
+            return default
+
+        value = retry_after.strip()
+        if value.isdigit():
+            return min(float(value), _MAX_RETRY_AFTER)
+
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return default
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        delay = max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+        return min(delay, _MAX_RETRY_AFTER)
+
+    def _handle_transport_error(
+        self,
+        exc: httpx.TransportError,
+        *,
+        method: str,
+        retry_skipped: bool,
+    ) -> None:
+        """Translate transport failures, including ambiguous mutation outcomes."""
+        if isinstance(exc, httpx.ConnectError):
+            message = f"Cannot connect to {self._base_url}. Check the URL and your network."
+        elif isinstance(exc, httpx.TimeoutException):
+            message = f"Request timed out contacting {self._base_url}."
+        else:
+            message = f"Network error contacting {self._base_url}: {exc}"
+
+        if retry_skipped:
+            if isinstance(exc, httpx.ConnectError):
+                message += f" The {method.upper()} request was not retried automatically."
+            else:
+                message += (
+                    f" The {method.upper()} request was not retried automatically because "
+                    "its outcome may be unknown; verify server state before trying again."
+                )
+        print_error(message, exit_code=1)
 
     def request(
         self,
@@ -168,6 +218,7 @@ class DocmostClient:
         path: str,
         *,
         error_messages: Mapping[int, str] | None = None,
+        retry_safe: bool = False,
         **kwargs: Any,
     ) -> dict[str, Any]:
         """Make an authenticated API request with error handling.
@@ -176,14 +227,22 @@ class DocmostClient:
             method: HTTP method (GET, POST, etc.).
             path: API path relative to /api/ (e.g., "/pages/info").
             error_messages: Optional status-specific error messages.
+            retry_safe: Explicitly allow retries for a replay-safe request.
             **kwargs: Additional arguments passed to httpx (json, params, etc.).
 
         Returns:
             Parsed JSON response body.
         """
         url = self.api_url(path)
-        request = self._http.build_request(method, url, **kwargs)
-        response = self._send_with_retry(request, error_messages=error_messages)
+
+        def request_factory() -> httpx.Request:
+            return self._http.build_request(method, url, **kwargs)
+
+        response = self._send_with_retry(
+            request_factory,
+            retry_safe=retry_safe,
+            error_messages=error_messages,
+        )
         return cast("dict[str, Any]", response.json())
 
     def post(
@@ -192,6 +251,7 @@ class DocmostClient:
         json: dict[str, Any] | None = None,
         *,
         error_messages: Mapping[int, str] | None = None,
+        retry_safe: bool = False,
     ) -> dict[str, Any]:
         """Convenience method for POST requests.
 
@@ -201,17 +261,26 @@ class DocmostClient:
             path: API path relative to /api/.
             json: JSON body to send.
             error_messages: Optional status-specific error messages.
+            retry_safe: Explicitly allow retries when this POST is read-only or idempotent.
 
         Returns:
             Parsed JSON response body.
         """
-        return self.request("POST", path, json=json, error_messages=error_messages)
+        return self.request(
+            "POST",
+            path,
+            json=json,
+            retry_safe=retry_safe,
+            error_messages=error_messages,
+        )
 
     def post_multipart(
         self,
         path: str,
         data: dict[str, str] | None = None,
         files: dict[str, Any] | None = None,
+        *,
+        retry_safe: bool = False,
     ) -> dict[str, Any]:
         """POST with multipart/form-data for file uploads.
 
@@ -219,17 +288,26 @@ class DocmostClient:
             path: API path relative to /api/.
             data: Form fields.
             files: File fields (httpx files format).
+            retry_safe: Explicitly allow retries for replay-safe multipart requests.
 
         Returns:
             Parsed JSON response body.
         """
         url = self.api_url(path)
-        request = self._http.build_request("POST", url, data=data, files=files)
-        response = self._send_with_retry(request)
+
+        def request_factory() -> httpx.Request:
+            return self._http.build_request("POST", url, data=data, files=files)
+
+        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
         return cast("dict[str, Any]", response.json())
 
     def post_raw(
-        self, path: str, json: dict[str, Any] | None = None, *, raise_on_error: bool = True
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+        *,
+        raise_on_error: bool = True,
+        retry_safe: bool = False,
     ) -> httpx.Response:
         """POST request returning raw httpx.Response.
 
@@ -239,19 +317,22 @@ class DocmostClient:
             path: API path relative to /api/.
             json: JSON body to send.
             raise_on_error: If False, skip error handling (for endpoint probes).
+            retry_safe: Explicitly allow retries for a replay-safe POST.
         """
         url = self.api_url(path)
-        request = self._http.build_request("POST", url, json=json)
+
+        def request_factory() -> httpx.Request:
+            return self._http.build_request("POST", url, json=json)
+
+        if raise_on_error:
+            return self._send_with_retry(request_factory, retry_safe=retry_safe)
+
+        request = request_factory()
         self._auth.apply(request)
         try:
-            response = self._http.send(request)
+            return self._http.send(request)
         except httpx.HTTPError:
-            if raise_on_error:
-                print_error("Request failed.", exit_code=1)
             return httpx.Response(status_code=0)  # Sentinel for failed probe
-        if raise_on_error:
-            self._handle_error(response)
-        return response
 
     def get_raw(self, path: str, *, raise_on_error: bool = True) -> httpx.Response:
         """GET a binary/non-JSON resource with authentication.
@@ -263,10 +344,15 @@ class DocmostClient:
         Returns:
             The raw HTTP response.
         """
-        request = self._http.build_request("GET", self.api_url(path))
-        if raise_on_error:
-            return self._send_with_retry(request)
+        url = self.api_url(path)
 
+        def request_factory() -> httpx.Request:
+            return self._http.build_request("GET", url)
+
+        if raise_on_error:
+            return self._send_with_retry(request_factory)
+
+        request = request_factory()
         self._auth.apply(request)
         try:
             return self._http.send(request)
@@ -310,12 +396,16 @@ class DocmostClient:
         response: httpx.Response,
         *,
         error_messages: Mapping[int, str] | None = None,
+        method: str = "",
+        retry_skipped: bool = False,
     ) -> None:
         """Translate HTTP error responses to user-friendly messages.
 
         Args:
             response: The HTTP response to check.
             error_messages: Optional status-specific error messages.
+            method: Request method, used to explain mutation retry safety.
+            retry_skipped: Whether a transient retry was deliberately skipped.
         """
         if response.is_success:
             return
@@ -343,12 +433,21 @@ class DocmostClient:
                 detail = "Validation error"
             print_error(f"Validation error: {detail}", exit_code=1)
         elif status == 429:
-            print_error("Rate limited. Try again later.", exit_code=1)
+            message = "Rate limited. Try again later."
+            if retry_skipped:
+                message = (
+                    f"Rate limited. The {method.upper()} request was not retried automatically "
+                    "to avoid duplicate changes; verify its result before retrying."
+                )
+            print_error(message, exit_code=1)
         elif status >= 500:
-            print_error(
-                f"Server error ({status}). Check Docmost logs.",
-                exit_code=1,
-            )
+            message = f"Server error ({status}). Check Docmost logs."
+            if retry_skipped:
+                message += (
+                    f" The {method.upper()} request was not retried automatically because it "
+                    "may have completed; verify server state before trying again."
+                )
+            print_error(message, exit_code=1)
         else:
             print_error(
                 f"Unexpected error (HTTP {status}).",

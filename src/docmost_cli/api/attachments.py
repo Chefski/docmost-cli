@@ -73,7 +73,11 @@ def upload_attachment(
 
 def get_attachment_info(client: DocmostClient, attachment_id: str) -> dict[str, Any]:
     """Return attachment metadata plus stable relative and absolute URLs."""
-    response = client.post("/files/info", json={"attachmentId": attachment_id})
+    response = client.post(
+        "/files/info",
+        json={"attachmentId": attachment_id},
+        retry_safe=True,
+    )
     attachment = response.get("data", response)
     return _with_urls(client, attachment)
 
@@ -108,6 +112,7 @@ def search_attachments(
     return client.post(
         "/search-attachments",
         json=body,
+        retry_safe=True,
         error_messages={
             403: (
                 "Attachment search is unavailable or permission was denied. "
