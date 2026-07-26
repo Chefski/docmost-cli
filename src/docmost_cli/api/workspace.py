@@ -20,7 +20,7 @@ def get_workspace_info(client: DocmostClient) -> dict[str, Any]:
     Returns:
         Raw API response dict with workspace details.
     """
-    return client.post("/workspace/info", json={})
+    return client.post("/workspace/info", json={}, retry_safe=True)
 
 
 def list_workspace_members(
@@ -40,4 +40,4 @@ def list_workspace_members(
         Raw API response dict with members list.
     """
     body = build_body({}, limit=limit, cursor=cursor)
-    return client.post("/workspace/members", json=body)
+    return client.post("/workspace/members", json=body, retry_safe=True)

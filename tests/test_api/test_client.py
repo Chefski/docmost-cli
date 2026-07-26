@@ -1,5 +1,6 @@
 """Tests for DocmostClient."""
 
+import io
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
@@ -7,6 +8,7 @@ import httpx
 import pytest
 
 from docmost_cli.api.client import DocmostClient
+from docmost_cli.api.users import get_current_user
 from docmost_cli.config.settings import DocmostSettings
 
 
@@ -127,6 +129,23 @@ class TestMutationSafeRetries:
         assert result == {"id": "page-1"}
         assert len(requests) == 2
         assert requests[0].content == requests[1].content == b'{"pageId":"page-1"}'
+
+    def test_read_only_post_wrapper_opts_into_safe_retries(
+        self,
+        httpx_mock,
+        api_key_settings,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        url = "https://docs.example.com/api/users/me"
+        httpx_mock.add_response(url=url, status_code=503)
+        httpx_mock.add_response(url=url, json={"name": "Retry User"})
+
+        with DocmostClient(api_key_settings) as client:
+            result = get_current_user(client)
+
+        assert result["name"] == "Retry User"
+        assert len(httpx_mock.get_requests()) == 2
 
     def test_retry_after_seconds_is_honored(
         self,
@@ -277,20 +296,21 @@ class TestAuthenticationReplay:
         httpx_mock.add_response(url=url, json={"id": "attachment-1"})
 
         with DocmostClient(session_settings) as client:
+            upload_stream = io.BytesIO(b"multipart contents")
             result = client.post_multipart(
                 "/files/upload",
                 data={"pageId": "page-1"},
-                files={"file": ("report.txt", b"multipart contents", "text/plain")},
+                files={"file": ("report.txt", upload_stream, "text/plain")},
             )
 
         requests = [request for request in httpx_mock.get_requests() if str(request.url) == url]
         assert result == {"id": "attachment-1"}
         assert len(requests) == 2
-        assert requests[0].content == requests[1].content
-        assert b'name="pageId"' in requests[1].content
-        assert b"page-1" in requests[1].content
-        assert b'filename="report.txt"' in requests[1].content
-        assert b"multipart contents" in requests[1].content
+        for request in requests:
+            assert b'name="pageId"' in request.content
+            assert b"page-1" in request.content
+            assert b'filename="report.txt"' in request.content
+            assert b"multipart contents" in request.content
         assert requests[1].headers["Authorization"] == "Bearer new_jwt"
 
     def test_second_401_is_not_reauthenticated_again(

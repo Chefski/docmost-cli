@@ -11,6 +11,7 @@ All API calls go through this client. It handles:
 import logging
 import sys
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import Any, cast
@@ -62,7 +63,7 @@ class DocmostClient:
 
     def _send_with_retry(
         self,
-        request: httpx.Request,
+        request_factory: Callable[[], httpx.Request],
         *,
         retry_safe: bool = False,
     ) -> httpx.Response:
@@ -75,32 +76,16 @@ class DocmostClient:
         request was not authorized.
 
         Args:
-            request: The prepared httpx request.
+            request_factory: Creates a fresh, complete request for every attempt.
             retry_safe: Whether the caller guarantees the request is safe to replay.
 
         Returns:
             The HTTP response (success only; errors raise SystemExit).
         """
+        # Rebuilding from source arguments lets httpx rewind seekable multipart
+        # fields without retaining a second encoded copy of a large upload.
+        request = request_factory()
         can_retry_transient = retry_safe or request.method.upper() in _IDEMPOTENT_METHODS
-
-        # Session re-authentication and transient retries need a fresh request
-        # object. Buffer the encoded body once so JSON, form, and multipart
-        # requests are replayed byte-for-byte, including their multipart
-        # boundary and file content.
-        can_replay = can_retry_transient or self._auth.can_retry()
-        replay_method = request.method
-        replay_url = str(request.url)
-        replay_headers = dict(request.headers)
-        replay_content = request.read() if can_replay else b""
-
-        def rebuild_request() -> httpx.Request:
-            return self._http.build_request(
-                replay_method,
-                replay_url,
-                headers=replay_headers,
-                content=replay_content,
-            )
-
         transient_attempt = 0
         reauthenticated = False
 
@@ -120,7 +105,7 @@ class DocmostClient:
                     transient_attempt += 1
                     self._log_retry(wait, transient_attempt)
                     time.sleep(wait)
-                    request = rebuild_request()
+                    request = request_factory()
                     continue
                 self._handle_transport_error(
                     exc,
@@ -143,7 +128,7 @@ class DocmostClient:
                 except AuthError as exc:
                     print_error(str(exc), exit_code=3)
                 reauthenticated = True
-                request = rebuild_request()
+                request = request_factory()
                 continue
 
             if (
@@ -156,7 +141,7 @@ class DocmostClient:
                 response.close()
                 self._log_retry(wait, transient_attempt)
                 time.sleep(wait)
-                request = rebuild_request()
+                request = request_factory()
                 continue
 
             self._handle_error(
@@ -244,8 +229,11 @@ class DocmostClient:
             Parsed JSON response body.
         """
         url = self.api_url(path)
-        request = self._http.build_request(method, url, **kwargs)
-        response = self._send_with_retry(request, retry_safe=retry_safe)
+
+        def request_factory() -> httpx.Request:
+            return self._http.build_request(method, url, **kwargs)
+
+        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
         return cast("dict[str, Any]", response.json())
 
     def post(
@@ -289,8 +277,11 @@ class DocmostClient:
             Parsed JSON response body.
         """
         url = self.api_url(path)
-        request = self._http.build_request("POST", url, data=data, files=files)
-        response = self._send_with_retry(request, retry_safe=retry_safe)
+
+        def request_factory() -> httpx.Request:
+            return self._http.build_request("POST", url, data=data, files=files)
+
+        response = self._send_with_retry(request_factory, retry_safe=retry_safe)
         return cast("dict[str, Any]", response.json())
 
     def post_raw(
@@ -312,10 +303,14 @@ class DocmostClient:
             retry_safe: Explicitly allow retries for a replay-safe POST.
         """
         url = self.api_url(path)
-        request = self._http.build_request("POST", url, json=json)
-        if raise_on_error:
-            return self._send_with_retry(request, retry_safe=retry_safe)
 
+        def request_factory() -> httpx.Request:
+            return self._http.build_request("POST", url, json=json)
+
+        if raise_on_error:
+            return self._send_with_retry(request_factory, retry_safe=retry_safe)
+
+        request = request_factory()
         self._auth.apply(request)
         try:
             return self._http.send(request)
@@ -332,10 +327,15 @@ class DocmostClient:
         Returns:
             The raw HTTP response.
         """
-        request = self._http.build_request("GET", self.api_url(path))
-        if raise_on_error:
-            return self._send_with_retry(request)
+        url = self.api_url(path)
 
+        def request_factory() -> httpx.Request:
+            return self._http.build_request("GET", url)
+
+        if raise_on_error:
+            return self._send_with_retry(request_factory)
+
+        request = request_factory()
         self._auth.apply(request)
         try:
             return self._http.send(request)
