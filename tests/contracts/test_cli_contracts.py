@@ -73,7 +73,14 @@ class RecordingClient:
     def __init__(self) -> None:
         self.requests: list[Request] = []
 
-    def post(self, path: str, json: dict[str, Any] | None = None) -> dict[str, Any]:
+    def post(
+        self,
+        path: str,
+        json: dict[str, Any] | None = None,
+        *,
+        retry_safe: bool = False,
+    ) -> dict[str, Any]:
+        del retry_safe
         self.requests.append(Request("POST", path, frozenset((json or {}).keys())))
         return {
             "id": "00000000-0000-4000-8000-000000000001",
@@ -87,8 +94,9 @@ class RecordingClient:
         json: dict[str, Any] | None = None,
         *,
         raise_on_error: bool = True,
+        retry_safe: bool = False,
     ) -> StubResponse:
-        del raise_on_error
+        del raise_on_error, retry_safe
         self.requests.append(Request("POST", path, frozenset((json or {}).keys())))
         return StubResponse()
 
@@ -97,7 +105,10 @@ class RecordingClient:
         path: str,
         data: dict[str, str] | None = None,
         files: dict[str, Any] | None = None,
+        *,
+        retry_safe: bool = False,
     ) -> dict[str, Any]:
+        del retry_safe
         self.requests.append(
             Request(
                 "POST",

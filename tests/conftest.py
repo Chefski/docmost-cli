@@ -17,6 +17,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     )
 
 
+@pytest.fixture(autouse=True)
+def isolate_session_cache(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Keep tests from reading or writing a developer's real session cache."""
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+
+
 @pytest.fixture()
 def tmp_config(tmp_path: Path) -> Path:
     """Create a temp config file with default profile."""
