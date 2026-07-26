@@ -48,11 +48,14 @@ class PageImportOverrideError(SystemExit):
         *,
         page_id: str,
         result: dict[str, Any],
-        cause: SystemExit,
+        failures: tuple[SystemExit, ...],
     ) -> None:
-        super().__init__(cause.code)
+        if not failures:
+            raise ValueError("At least one override failure is required.")
+        super().__init__(failures[0].code)
         self.page_id = page_id
         self.result = result
+        self.failures = failures
 
 
 def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
@@ -488,17 +491,24 @@ def apply_import_overrides(
     from docmost_cli.api.pagination import extract_id
 
     page_id = extract_id(result)
-    try:
-        if title is not None:
+    failures: list[SystemExit] = []
+    if title is not None:
+        try:
             update_page_meta(client, page_id=page_id, title=title)
-        if parent_page_id is not None:
+        except SystemExit as exc:
+            failures.append(exc)
+    if parent_page_id is not None:
+        try:
             move_page(
                 client,
                 page_id=page_id,
                 parent_page_id=parent_page_id,
                 position=POSITION_FIRST,
             )
-    except SystemExit as exc:
+        except SystemExit as exc:
+            failures.append(exc)
+
+    if failures:
         print_result(
             page_id,
             f"Imported page {page_id}, but failed to apply the requested override(s).",
@@ -506,8 +516,8 @@ def apply_import_overrides(
         raise PageImportOverrideError(
             page_id=page_id,
             result=result,
-            cause=exc,
-        ) from exc
+            failures=tuple(failures),
+        ) from failures[0]
 
 
 def get_sidebar_pages(client: DocmostClient, space_id: str) -> dict[str, Any]:

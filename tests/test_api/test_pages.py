@@ -390,6 +390,8 @@ class TestImportPage:
         assert exc.value.code == 4
         assert exc.value.page_id == "imported-page"
         assert exc.value.result == {"id": "imported-page", "title": "Page"}
+        assert len(exc.value.failures) == 1
+        assert exc.value.failures[0].code == 4
         captured = capsys.readouterr()
         assert captured.out == "imported-page\n"
         assert "failed to apply the requested override" in captured.err
