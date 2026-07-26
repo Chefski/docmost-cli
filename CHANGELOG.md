@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add page attachment upload, in-page insertion, stable URL lookup, in-place replacement, info, and download commands
+- Preserve attachments in page export/import through native portable ZIP archives
+- Preserve attachment IDs and bytes during sync using local `files/<attachment-id>/...` assets and manifest hashes
+- Use Docmost's shared `/pages/update` content contract so page IDs and attachment ownership remain stable on Community and Enterprise editions
+
 ## 0.4.0 (2026-03-22)
 
 - Add `sync pull` command: download all pages from a space to local Markdown files with YAML frontmatter

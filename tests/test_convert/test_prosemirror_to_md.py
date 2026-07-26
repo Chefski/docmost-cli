@@ -7,6 +7,42 @@ import pytest
 
 from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
 
+
+def test_attachment_paths_override_server_urls() -> None:
+    document = {
+        "type": "doc",
+        "content": [
+            {
+                "type": "image",
+                "attrs": {
+                    "attachmentId": "image-id",
+                    "src": "/api/files/image-id/old.png",
+                    "alt": "Diagram",
+                },
+            },
+            {
+                "type": "attachment",
+                "attrs": {
+                    "attachmentId": "file-id",
+                    "url": "/api/files/file-id/old.pdf",
+                    "name": "Report.pdf",
+                },
+            },
+        ],
+    }
+
+    result = convert_to_markdown(
+        document,
+        attachment_paths={
+            "image-id": "files/image-id/diagram.png",
+            "file-id": "files/file-id/Report.pdf",
+        },
+    )
+
+    assert "![Diagram](files/image-id/diagram.png)" in result
+    assert "[Report.pdf](files/file-id/Report.pdf)" in result
+
+
 FIXTURES_DIR = Path(__file__).parent.parent / "fixtures"
 
 # Fixture pairs: (json_file, md_file)

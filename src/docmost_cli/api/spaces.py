@@ -53,7 +53,8 @@ def get_space_info(
     """
     if space_id:
         result = client.post("/spaces/info", json={"spaceId": space_id})
-        return result.get("data", result)
+        data = result.get("data", result)
+        return data if isinstance(data, dict) else {}
     if slug:
         # /spaces/info only accepts spaceId, so search by slug in the full list
         return _find_space_by_slug(client, slug)
@@ -94,7 +95,7 @@ def resolve_space_id(client: DocmostClient, slug: str) -> str:
     space_id = info.get("id")
     if not space_id:
         print_error(f"Space '{slug}' not found.", exit_code=4)
-    return space_id
+    return str(space_id)
 
 
 def create_space(

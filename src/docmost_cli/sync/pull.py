@@ -16,6 +16,7 @@ class PullResult:
 
     pages_pulled: int
     dir_path: Path
+    attachments_pulled: int = 0
 
 
 def flatten_tree(
@@ -72,10 +73,17 @@ def pull_space(
     Returns:
         PullResult with count and path.
     """
+    from docmost_cli.api.attachments import download_attachment
     from docmost_cli.api.pages import build_page_tree, get_page_content
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
     from docmost_cli.output.formatter import print_error
+    from docmost_cli.sync.assets import (
+        asset_markdown_path,
+        asset_relative_path,
+        build_asset_entry,
+        collect_attachment_ids,
+    )
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         build_manifest,
@@ -118,6 +126,7 @@ def pull_space(
 
     # 5. Fetch content and write files
     page_entries: list[dict[str, Any]] = []
+    assets: dict[str, dict[str, Any]] = {}
     for i, page_info in enumerate(flat_pages, 1):
         page_id = page_info["id"]
         title = page_info["title"]
@@ -127,7 +136,30 @@ def pull_space(
         content_data = get_page_content(client, page_id)
         pm_content = content_data.get("content")
 
-        markdown = convert_to_markdown(pm_content) if pm_content else ""
+        attachment_ids = collect_attachment_ids(pm_content)
+        attachment_paths: dict[str, str] = {}
+        for attachment_id in attachment_ids:
+            if attachment_id not in assets:
+                attachment_info, attachment_bytes = download_attachment(client, attachment_id)
+                relative_path = asset_relative_path(
+                    attachment_id,
+                    str(attachment_info["fileName"]),
+                )
+                destination = dir_path / relative_path
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(attachment_bytes)
+                assets[attachment_id] = build_asset_entry(
+                    attachment_info,
+                    relative_path,
+                    destination,
+                )
+            attachment_paths[attachment_id] = asset_markdown_path(
+                str(assets[attachment_id]["path"])
+            )
+
+        markdown = (
+            convert_to_markdown(pm_content, attachment_paths=attachment_paths) if pm_content else ""
+        )
 
         # Generate filename and write file
         filename = sanitize_filename(title, page_id)
@@ -147,12 +179,19 @@ def pull_space(
             parent_id=page_info["parent_id"],
             icon=page_info["icon"],
             content_hash=content_hash,
+            attachment_ids=attachment_ids,
         )
         page_entries.append({"id": page_id, **entry})
 
     # 6. Write manifest LAST
-    manifest = build_manifest(space_slug, space_id, page_entries)
+    manifest = build_manifest(space_slug, space_id, page_entries, assets)
     save_manifest(dir_path, manifest)
 
-    _err.print(f"Pulled {total} pages from '{space_slug}' -> {dir_path}")
-    return PullResult(pages_pulled=total, dir_path=dir_path)
+    _err.print(
+        f"Pulled {total} pages and {len(assets)} attachments from '{space_slug}' -> {dir_path}"
+    )
+    return PullResult(
+        pages_pulled=total,
+        dir_path=dir_path,
+        attachments_pulled=len(assets),
+    )

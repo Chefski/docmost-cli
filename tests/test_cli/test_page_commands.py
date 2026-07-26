@@ -483,8 +483,72 @@ class TestPageExport:
         assert output_file.exists()
         assert "File Content" in output_file.read_text()
 
+    def test_export_attachment_archive(self, tmp_config, tmp_path, httpx_mock) -> None:
+        archive = self._make_zip("![Diagram](files/attachment-id/diagram.png)")
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/export",
+            content=archive,
+        )
+        output_file = tmp_path / "portable.zip"
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "export",
+                "page-1",
+                "--include-attachments",
+                "--output",
+                str(output_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert output_file.read_bytes() == archive
+        import json
+
+        payload = json.loads(httpx_mock.get_requests()[0].content)
+        assert payload["includeAttachments"] is True
+
 
 class TestPageImport:
+    def test_import_zip_preserves_attachments(
+        self,
+        tmp_config,
+        tmp_path,
+        httpx_mock,
+    ) -> None:
+        archive = tmp_path / "portable.zip"
+        archive.write_bytes(b"zip-bytes")
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces",
+            json={"data": {"items": [{"id": "s1", "slug": "eng", "name": "Eng"}]}},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import-zip",
+            json={"id": "file-task-1", "status": "processing"},
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "page",
+                "import",
+                "eng",
+                "--file",
+                str(archive),
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert "file-task-1" in result.output
+        body = httpx_mock.get_requests()[1].read()
+        assert b"generic" in body
+
     def test_import_with_title(self, tmp_config, tmp_path, httpx_mock) -> None:
         md_file = tmp_path / "doc.md"
         md_file.write_text("# Auto Title\n\nSome content")

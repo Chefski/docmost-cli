@@ -1,5 +1,7 @@
 """Tests for Page API methods."""
 
+import json
+
 import pytest
 
 from docmost_cli.api.client import DocmostClient
@@ -9,11 +11,13 @@ from docmost_cli.api.pages import (
     delete_page,
     duplicate_page,
     export_page,
+    export_page_archive,
     get_page_children,
     get_page_content,
     get_page_history,
     get_page_info,
     get_sidebar_pages,
+    import_page_archive,
     list_recent_pages,
     move_page,
     update_page_content,
@@ -104,7 +108,7 @@ class TestUpdatePageMeta:
 class TestUpdatePageContent:
     def test_sends_content(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content/update",
+            url="https://docs.example.com/api/pages/update",
             json={"success": True},
         )
         with DocmostClient(api_key_settings) as client:
@@ -112,15 +116,19 @@ class TestUpdatePageContent:
                 client, page_id="page-1", content="# Updated\n\nNew content"
             )
         assert result["success"] is True
+        request = httpx_mock.get_requests()[0]
+        payload = json.loads(request.content)
+        assert payload["operation"] == "replace"
+        assert payload["format"] == "markdown"
 
-    def test_enterprise_only_404(self, httpx_mock, api_key_settings) -> None:
+    def test_update_404(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content/update",
+            url="https://docs.example.com/api/pages/update",
             status_code=404,
         )
         with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit) as exc:
             update_page_content(client, page_id="page-1", content="test")
-        assert exc.value.code == 1  # Re-raised with helpful message
+        assert exc.value.code == 4
 
 
 class TestDeletePage:
@@ -276,6 +284,45 @@ class TestExportPage:
         with DocmostClient(api_key_settings) as client:
             result = export_page(client, "page-1", fmt="md")
         assert result == "# Exported"
+
+    def test_export_archive_requests_attachments(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/export",
+            content=b"portable-zip",
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = export_page_archive(
+                client,
+                "page-1",
+                fmt="md",
+                include_children=True,
+            )
+
+        assert result == b"portable-zip"
+        payload = json.loads(httpx_mock.get_requests()[0].content)
+        assert payload["includeAttachments"] is True
+        assert payload["includeChildren"] is True
+
+
+class TestImportPageArchive:
+    def test_starts_generic_zip_import(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import-zip",
+            json={"id": "file-task-1", "status": "processing"},
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = import_page_archive(
+                client,
+                space_id="space-1",
+                file_name="portable.zip",
+                file_bytes=b"zip-bytes",
+            )
+
+        assert result["id"] == "file-task-1"
+        body = httpx_mock.get_requests()[0].read()
+        assert b'name="source"' in body
+        assert b"generic" in body
+        assert b"portable.zip" in body
 
 
 class TestGetSidebarPages:

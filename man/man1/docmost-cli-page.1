@@ -78,10 +78,12 @@ docmost\-cli\-page \- page operations for Docmost wiki
 .BR md | html ]
 .RB [ \-\-output
 .IR path ]
+.RB [ \-\-include\-attachments ]
+.RB [ \-\-include\-children ]
 .br
 .B docmost\-cli page import
 .I space\-slug
-.BI \-\-file " path"
+.BI \-\-file " md|html|zip path"
 .RB [ \-\-title
 .IR title ]
 .RB [ \-\-parent
@@ -280,6 +282,16 @@ Prompts for confirmation if the file already exists
 (unless
 .B \-\-yes
 is set).
+.TP
+.B \-\-include\-attachments
+Write a portable ZIP containing the page and its referenced attachment files.
+Requires
+.BR \-\-output .
+.TP
+.B \-\-include\-children
+Include descendant pages in the portable ZIP.
+Requires
+.BR \-\-include\-attachments .
 .SS import
 Import a file as a new page.
 .PP
@@ -287,7 +299,8 @@ Import a file as a new page.
 identifies the space to import into.
 .TP
 .BI \-\-file " path"
-Markdown or HTML file to import.
+Markdown, HTML, or portable ZIP file to import.
+ZIP imports preserve attachment assets and return the asynchronous file-task ID.
 Required.
 .TP
 .BI \-\-title " title"

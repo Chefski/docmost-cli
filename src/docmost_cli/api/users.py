@@ -20,6 +20,8 @@ def get_current_user(client: DocmostClient) -> dict[str, Any]:
     """
     result = client.post("/users/me", json={})
     data = result.get("data", result)
+    if not isinstance(data, dict):
+        return {}
     if "user" in data and isinstance(data["user"], dict):
         return data["user"]
     return data

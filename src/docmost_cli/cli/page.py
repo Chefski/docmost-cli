@@ -13,11 +13,13 @@ from docmost_cli.api.pages import (
     delete_page,
     duplicate_page,
     export_page,
+    export_page_archive,
     get_page_children,
     get_page_content,
     get_page_history,
     get_page_info,
     import_page,
+    import_page_archive,
     list_recent_pages,
     move_page,
     update_page_content,
@@ -326,9 +328,42 @@ def page_export_cmd(
     page_id: str = typer.Argument(help="Page ID to export"),
     fmt: str = typer.Option("md", "--format", help="Export format: md or html"),
     output: Path | None = typer.Option(None, "--output", help="Write to file instead of stdout"),
+    include_attachments: bool = typer.Option(
+        False,
+        "--include-attachments",
+        help="Include attachment files in a portable ZIP (requires --output)",
+    ),
+    include_children: bool = typer.Option(
+        False,
+        "--include-children",
+        help="Include descendant pages in the ZIP (requires --include-attachments)",
+    ),
 ) -> None:
-    """Export page content."""
+    """Export page content, optionally with all attachment assets."""
+    if include_children and not include_attachments:
+        print_error("--include-children requires --include-attachments.")
+    if include_attachments and output is None:
+        print_error("--output is required when exporting attachments.")
+
     client = get_client()
+
+    if include_attachments:
+        archive = export_page_archive(
+            client,
+            page_id,
+            fmt=fmt,
+            include_children=include_children,
+        )
+        assert output is not None
+        if output.exists() and not state.yes:
+            typer.confirm(f"File '{output}' already exists. Overwrite?", abort=True)
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(archive)
+        from rich.console import Console
+
+        Console(stderr=True).print(f"Exported page and attachments to {output}")
+        return
+
     content = export_page(client, page_id, fmt=fmt)
 
     if output:
@@ -349,7 +384,7 @@ def page_import_cmd(
     title: str | None = typer.Option(None, "--title", help="Override page title"),
     parent: str | None = typer.Option(None, "--parent", help="Parent page ID"),
 ) -> None:
-    """Import a file as a new page."""
+    """Import Markdown/HTML or a portable ZIP with attachment assets."""
     if not file.exists():
         print_error(f"File not found: {file}")
 
@@ -358,6 +393,20 @@ def page_import_cmd(
 
     # Read file once
     file_bytes = file.read_bytes()
+
+    if file.suffix.lower() == ".zip":
+        if title is not None or parent is not None:
+            print_error("--title and --parent cannot override metadata in a ZIP import.")
+        result = import_page_archive(
+            client,
+            space_id=space_id,
+            file_name=file.name,
+            file_bytes=file_bytes,
+        )
+        task_id = extract_id(result)
+        print_result(task_id, f"Started portable import from {file.name} (attachments preserved)")
+        return
+
     file_text = file_bytes.decode("utf-8", errors="replace")
 
     # Auto-detect title: flag > H1 in file > filename stem

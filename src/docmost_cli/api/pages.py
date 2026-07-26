@@ -15,12 +15,14 @@ __all__ = [
     "delete_page",
     "duplicate_page",
     "export_page",
+    "export_page_archive",
     "get_page_children",
     "get_page_content",
     "get_page_history",
     "get_page_info",
     "get_sidebar_pages",
     "import_page",
+    "import_page_archive",
     "list_recent_pages",
     "move_page",
     "try_update_page_content",
@@ -43,7 +45,8 @@ def get_page_info(client: DocmostClient, page_id: str) -> dict[str, Any]:
         Page info dict (unwrapped from data envelope).
     """
     result = client.post("/pages/info", json={"pageId": page_id})
-    return result.get("data", result)
+    data = result.get("data", result)
+    return data if isinstance(data, dict) else {}
 
 
 def create_page_via_import(
@@ -113,36 +116,29 @@ def update_page_content(
     page_id: str,
     content: str,
     fmt: str = "markdown",
+    operation: str = "replace",
 ) -> dict[str, Any]:
-    """Update page content via REST endpoint.
-
-    This endpoint may only be available on Enterprise edition (v0.70+).
-    On Community edition, this may return 404/405.
+    """Update page content through Docmost's core page endpoint.
 
     Args:
         client: Authenticated Docmost client.
         page_id: Page UUID.
         content: Markdown or HTML content.
         fmt: Content format ("markdown" or "html").
+        operation: ``replace``, ``append``, or ``prepend``.
 
     Returns:
         Raw API response dict.
     """
-    try:
-        return client.post(
-            "/pages/content/update",
-            json={"pageId": page_id, "content": content, "format": fmt},
-        )
-    except SystemExit as exc:
-        if exc.code == 4:  # 404 — endpoint not available
-            print_error(
-                "Content update is not available on this Docmost instance. "
-                "This feature may require Enterprise edition (v0.70+). "
-                "Use 'docmost-cli page delete' + 'docmost-cli page create' "
-                "to replace page content.",
-                exit_code=1,
-            )
-        raise
+    return client.post(
+        "/pages/update",
+        json={
+            "pageId": page_id,
+            "content": content,
+            "format": fmt,
+            "operation": operation,
+        },
+    )
 
 
 def try_update_page_content(
@@ -152,10 +148,7 @@ def try_update_page_content(
     content: str,
     fmt: str = "markdown",
 ) -> bool:
-    """Try updating page content via Enterprise endpoint.
-
-    Silently probes the endpoint without raising on failure.
-    Use this to detect whether the Enterprise content-update API is available.
+    """Try updating page content without raising on an unavailable endpoint.
 
     Args:
         client: Authenticated Docmost client.
@@ -167,8 +160,13 @@ def try_update_page_content(
         True if the update succeeded, False if the endpoint is unavailable.
     """
     response = client.post_raw(
-        "/pages/content/update",
-        json={"pageId": page_id, "content": content, "format": fmt},
+        "/pages/update",
+        json={
+            "pageId": page_id,
+            "content": content,
+            "format": fmt,
+            "operation": "replace",
+        },
         raise_on_error=False,
     )
     return response.is_success
@@ -401,8 +399,8 @@ def get_page_history(
 def export_page(client: DocmostClient, page_id: str, fmt: str = "md") -> str:
     """Export page content.
 
-    Docmost returns a ZIP file containing the exported content.
-    This function extracts the content from the ZIP.
+    Current Docmost versions return a plain file for a single page, while
+    older versions returned a one-file ZIP. Both response shapes are accepted.
 
     Args:
         client: Authenticated Docmost client.
@@ -419,12 +417,38 @@ def export_page(client: DocmostClient, page_id: str, fmt: str = "md") -> str:
     api_format = "markdown" if fmt == "md" else fmt
     response = client.post_raw("/pages/export", json={"pageId": page_id, "format": api_format})
 
-    # Response is a ZIP file — extract content from it
-    with zipfile.ZipFile(io.BytesIO(response.content)) as zf:
-        names = zf.namelist()
+    buffer = io.BytesIO(response.content)
+    if not zipfile.is_zipfile(buffer):
+        return response.content.decode("utf-8")
+
+    # Compatibility with older Docmost versions that zipped single-page exports.
+    with zipfile.ZipFile(buffer) as zf:
+        expected_suffix = ".md" if api_format == "markdown" else ".html"
+        names = [name for name in zf.namelist() if name.lower().endswith(expected_suffix)]
         if not names:
-            print_error("Export ZIP is empty.", exit_code=1)
+            print_error("Export ZIP contains no page content.", exit_code=1)
         return zf.read(names[0]).decode("utf-8")
+
+
+def export_page_archive(
+    client: DocmostClient,
+    page_id: str,
+    *,
+    fmt: str = "md",
+    include_children: bool = False,
+) -> bytes:
+    """Export a page and its attachment files as a portable ZIP archive."""
+    api_format = "markdown" if fmt == "md" else fmt
+    response = client.post_raw(
+        "/pages/export",
+        json={
+            "pageId": page_id,
+            "format": api_format,
+            "includeAttachments": True,
+            "includeChildren": include_children,
+        },
+    )
+    return response.content
 
 
 def get_sidebar_pages(client: DocmostClient, space_id: str) -> dict[str, Any]:
@@ -466,6 +490,23 @@ def import_page(
     files = {"file": (file_name, file_bytes, mime)}
     data = build_body({"spaceId": space_id}, parentPageId=parent_page_id)
     return client.post_multipart("/pages/import", data=data, files=files)
+
+
+def import_page_archive(
+    client: DocmostClient,
+    *,
+    space_id: str,
+    file_name: str,
+    file_bytes: bytes,
+) -> dict[str, Any]:
+    """Import a Docmost/generic ZIP, preserving included attachment files.
+
+    ZIP imports are processed asynchronously by Docmost. The response is a
+    file-task record whose stable ID can be queried through ``/file-tasks/info``.
+    """
+    files = {"file": (file_name, file_bytes, "application/zip")}
+    data = {"spaceId": space_id, "source": "generic"}
+    return client.post_multipart("/pages/import-zip", data=data, files=files)
 
 
 def build_page_tree(

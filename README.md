@@ -15,6 +15,8 @@
 - **Space management** -- list, create, and update workspaces
 - **Comments** -- add, edit, and list comments on any page
 - **Full-text search** -- search across pages and attachments
+- **Attachment management** -- upload, insert, replace, inspect, and download page assets with stable IDs/URLs
+- **Portable transfers** -- export/import ZIP archives without losing page attachments
 - **ProseMirror conversion** -- automatic conversion between Docmost's ProseMirror JSON and Markdown
 - **Tree view** -- display page hierarchies as indented trees
 - **Configuration profiles** -- manage multiple Docmost instances with named profiles
@@ -80,8 +82,8 @@ docmost-cli page create <space-slug> --title "My Page" --file content.md
 | `docmost-cli page copy <page-id>` | Copy a page to another space (`--space`) |
 | `docmost-cli page children <page-id>` | List child pages (`--json`) |
 | `docmost-cli page history <page-id>` | Show page version history (`--json`) |
-| `docmost-cli page export <page-id>` | Export page (`--format md\|html`, `--output`) |
-| `docmost-cli page import <space-slug>` | Import a Markdown file as a new page |
+| `docmost-cli page export <page-id>` | Export page (`--include-attachments` creates a portable ZIP) |
+| `docmost-cli page import <space-slug>` | Import Markdown/HTML or a portable ZIP |
 | `docmost-cli space list` | List all spaces (`--detail`, `--json`) |
 | `docmost-cli space get <space-slug>` | Get space details |
 | `docmost-cli space create` | Create a new space (`--name`, `--slug`) |
@@ -91,9 +93,40 @@ docmost-cli page create <space-slug> --title "My Page" --file content.md
 | `docmost-cli comment update <comment-id>` | Edit a comment (`--content`) |
 | `docmost-cli search <query>` | Full-text search (`--space`, `--limit`, `--json`) |
 | `docmost-cli attachment search <query>` | Search attachments (`--space`) |
+| `docmost-cli attachment upload <page-id>` | Upload and insert a file/image (`--file`, `--replace`, `--json`) |
+| `docmost-cli attachment info <attachment-id>` | Show metadata and stable authenticated URL |
+| `docmost-cli attachment download <attachment-id>` | Download an attachment (`--output`) |
 | `docmost-cli workspace info` | Show workspace details |
 | `docmost-cli workspace members` | List workspace members (`--json`) |
 | `docmost-cli user me` | Show authenticated user info |
+
+## Attachments and portable transfers
+
+Upload an image or file directly into a page. The default stdout value is the stable attachment
+ID; use `--json` when automation needs both the ID and authenticated URL:
+
+```bash
+docmost-cli attachment upload <page-id> --file ./diagram.png --json
+```
+
+Replace attachment bytes without changing links (Docmost requires the same file extension):
+
+```bash
+docmost-cli attachment upload <page-id> --file ./diagram-v2.png \
+  --replace <attachment-id> --json
+```
+
+Portable page archives use Docmost's native ZIP format and retain their asset files:
+
+```bash
+docmost-cli page export <page-id> --include-attachments --output page.zip
+docmost-cli page import engineering --file page.zip
+```
+
+`sync pull` downloads referenced assets beneath `files/<attachment-id>/<filename>` and records
+their hashes and owning pages in `.docmost-manifest.json`. `sync push` uploads new local assets and
+replaces changed assets in place, while writing the stable attachment ID back into Docmost page
+content. Relative image/file links to existing local files are treated as page assets.
 
 ## Configuration
 

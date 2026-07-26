@@ -4,18 +4,24 @@ Handles all Docmost node types and marks, converting ProseMirror
 document trees into GitHub-Flavored Markdown.
 """
 
-from typing import Any
+import re
+from collections.abc import Callable, Mapping
+from typing import Any, cast
+from urllib.parse import unquote
 
 __all__ = ["convert_to_markdown"]
+
+_SERVER_ATTACHMENT_RE = re.compile(r"(?:^|/)(?:api/)?files/([^/?#]+)/")
 
 
 class ProseMirrorConverter:
     """Recursive ProseMirror node walker that produces Markdown output."""
 
-    def __init__(self) -> None:
+    def __init__(self, attachment_paths: Mapping[str, str] | None = None) -> None:
         self._indent = 0
         self._list_type: list[str] = []  # stack: "bullet", "ordered", "task"
         self._ordered_counter: list[int] = []  # counter per ordered list level
+        self._attachment_paths = attachment_paths or {}
 
     def convert(self, doc: dict[str, Any]) -> str:
         """Convert a ProseMirror document to Markdown.
@@ -38,7 +44,8 @@ class ProseMirrorConverter:
         node_type = node.get("type", "")
         handler = getattr(self, f"_node_{node_type}", None)
         if handler:
-            return handler(node)
+            typed_handler = cast("Callable[[dict[str, Any]], str]", handler)
+            return typed_handler(node)
         # Unknown node: try to extract content recursively
         return self._walk_children(node)
 
@@ -59,7 +66,8 @@ class ProseMirrorConverter:
         return text + "\n\n"
 
     def _node_heading(self, node: dict[str, Any]) -> str:
-        level = node.get("attrs", {}).get("level", 1)
+        raw_level = node.get("attrs", {}).get("level", 1)
+        level = raw_level if isinstance(raw_level, int) else 1
         text = self._render_inline(node.get("content", []))
         return "#" * level + " " + text + "\n\n"
 
@@ -171,11 +179,44 @@ class ProseMirrorConverter:
     def _node_image(self, node: dict[str, Any]) -> str:
         attrs = node.get("attrs", {})
         alt = attrs.get("alt", "")
-        src = attrs.get("src", "")
+        src = self._attachment_source(attrs, "src")
         title = attrs.get("title", "")
         if title:
             return f'![{alt}]({src} "{title}")\n\n'
         return f"![{alt}]({src})\n\n"
+
+    def _node_attachment(self, node: dict[str, Any]) -> str:
+        attrs = node.get("attrs", {})
+        name = attrs.get("name") or "attachment"
+        url = self._attachment_source(attrs, "url")
+        return f"[{name}]({url})\n\n" if url else f"[Attachment: {name}]\n\n"
+
+    def _node_pdf(self, node: dict[str, Any]) -> str:
+        return self._node_media_link(node, "PDF")
+
+    def _node_audio(self, node: dict[str, Any]) -> str:
+        return self._node_media_link(node, "Audio")
+
+    def _node_video(self, node: dict[str, Any]) -> str:
+        return self._node_media_link(node, "Video")
+
+    def _node_media_link(self, node: dict[str, Any], label: str) -> str:
+        attrs = node.get("attrs", {})
+        name = attrs.get("name") or attrs.get("title") or label
+        url = self._attachment_source(attrs, "src")
+        return f"[{name}]({url})\n\n" if url else f"[{label}]\n\n"
+
+    def _attachment_source(self, attrs: dict[str, Any], source_key: str) -> str:
+        attachment_id = attrs.get("attachmentId")
+        normalized_id = str(attachment_id) if attachment_id else ""
+        if not normalized_id:
+            source = str(attrs.get(source_key, ""))
+            match = _SERVER_ATTACHMENT_RE.search(source)
+            if match:
+                normalized_id = unquote(match.group(1))
+        if normalized_id in self._attachment_paths:
+            return self._attachment_paths[normalized_id]
+        return str(attrs.get(source_key, ""))
 
     def _node_hardBreak(self, node: dict[str, Any]) -> str:
         return "\n"
@@ -210,10 +251,14 @@ class ProseMirrorConverter:
         return f"[Embed: {src}]\n\n"
 
     def _node_drawio(self, node: dict[str, Any]) -> str:
-        return "[Diagram: drawio]\n\n"
+        attrs = node.get("attrs", {})
+        src = self._attachment_source(attrs, "src")
+        return f"![Diagram: drawio]({src})\n\n" if src else "[Diagram: drawio]\n\n"
 
     def _node_excalidraw(self, node: dict[str, Any]) -> str:
-        return "[Diagram: excalidraw]\n\n"
+        attrs = node.get("attrs", {})
+        src = self._attachment_source(attrs, "src")
+        return f"![Diagram: excalidraw]({src})\n\n" if src else "[Diagram: excalidraw]\n\n"
 
     # -- Inline rendering ---------------------------------------------------
 
@@ -231,7 +276,7 @@ class ProseMirrorConverter:
             elif node_type == "image":
                 attrs = node.get("attrs", {})
                 alt = attrs.get("alt", "")
-                src = attrs.get("src", "")
+                src = self._attachment_source(attrs, "src")
                 parts.append(f"![{alt}]({src})")
             else:
                 # Other inline nodes
@@ -288,13 +333,18 @@ class ProseMirrorConverter:
         return text
 
 
-def convert_to_markdown(doc: dict[str, Any]) -> str:
+def convert_to_markdown(
+    doc: dict[str, Any],
+    *,
+    attachment_paths: Mapping[str, str] | None = None,
+) -> str:
     """Convert a ProseMirror document to Markdown.
 
     Args:
         doc: ProseMirror document dict.
+        attachment_paths: Optional mapping of stable attachment IDs to local paths.
 
     Returns:
         Markdown string.
     """
-    return ProseMirrorConverter().convert(doc)
+    return ProseMirrorConverter(attachment_paths).convert(doc)
