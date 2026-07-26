@@ -15,6 +15,7 @@ import pytest
 from docmost_cli.api.attachments import (
     download_attachment,
     get_attachment_info,
+    search_attachments,
     upload_attachment,
 )
 from docmost_cli.api.auth import SessionAuth
@@ -78,9 +79,10 @@ class RecordingClient:
         path: str,
         json: dict[str, Any] | None = None,
         *,
+        error_messages: dict[int, str] | None = None,
         retry_safe: bool = False,
     ) -> dict[str, Any]:
-        del retry_safe
+        del error_messages, retry_safe
         self.requests.append(Request("POST", path, frozenset((json or {}).keys())))
         return {
             "id": "00000000-0000-4000-8000-000000000001",
@@ -239,12 +241,10 @@ def test_literal_endpoint_inventory_handles_keyword_paths() -> None:
 
 def test_known_drift_is_small_owned_and_actionable() -> None:
     expected = {
-        ("endpoint", "POST", "/attachments/search", ()),
         ("endpoint", "POST", "/pages/content", ()),
         ("endpoint", "POST", "/pages/copy", ()),
         ("request-fields", "POST", "/pages/import", ("parentPageId",)),
         ("request-fields", "POST", "/pages/move", ("spaceId",)),
-        ("request-fields", "POST", "/search", ("cursor", "type")),
     }
     actual = {
         (
@@ -265,16 +265,6 @@ def test_known_drift_is_small_owned_and_actionable() -> None:
 
 
 def test_known_request_field_drift_matches_current_helpers() -> None:
-    search_request = _single_request(
-        lambda client: search(
-            client,
-            "roadmap",
-            space_id="00000000-0000-4000-8000-000000000002",
-            result_type="page",
-            limit=5,
-            cursor="cursor-1",
-        )
-    )
     move_request = _single_request(
         lambda client: move_page(
             client,
@@ -294,7 +284,7 @@ def test_known_request_field_drift_matches_current_helpers() -> None:
     )
 
     observed: dict[tuple[str, str], set[str]] = {}
-    for request in (search_request, move_request, import_request):
+    for request in (move_request, import_request):
         matched = _operation_for(request)
         assert matched is not None
         _, operation = matched
@@ -342,6 +332,14 @@ def test_session_login_request_matches_pinned_contract(
 @pytest.mark.parametrize(
     ("operation_name", "invoke"),
     [
+        (
+            "attachments.search",
+            lambda client: search_attachments(
+                client,
+                "roadmap",
+                space_id="00000000-0000-4000-8000-000000000002",
+            ),
+        ),
         (
             "attachments.download",
             lambda client: download_attachment(
@@ -483,6 +481,16 @@ def test_session_login_request_matches_pinned_contract(
                 client,
                 page_id="00000000-0000-4000-8000-000000000001",
                 content="# Updated",
+            ),
+        ),
+        (
+            "search.pages",
+            lambda client: search(
+                client,
+                "roadmap",
+                space_id="00000000-0000-4000-8000-000000000002",
+                limit=5,
+                offset=10,
             ),
         ),
         (

@@ -718,20 +718,6 @@
     {
       "kind": "endpoint",
       "method": "POST",
-      "path": "/attachments/search",
-      "source": "src/docmost_cli/api/attachments.py",
-      "replacement": "/search-attachments",
-      "owner": "high-priority fix 2",
-      "upstream_absence": [
-        {
-          "kind": "controller",
-          "file": "apps/server/src/core/attachment/attachment.controller.ts"
-        }
-      ]
-    },
-    {
-      "kind": "endpoint",
-      "method": "POST",
       "path": "/pages/content",
       "source": "src/docmost_cli/api/pages.py",
       "replacement": "/pages/info",
@@ -774,15 +760,6 @@
       "source": "src/docmost_cli/api/pages.py",
       "replacement": "/pages/move-to-space",
       "owner": "high-priority fix 1"
-    },
-    {
-      "kind": "request-fields",
-      "method": "POST",
-      "path": "/search",
-      "fields": ["cursor", "type"],
-      "source": "src/docmost_cli/api/search.py",
-      "replacement": "offset and dedicated attachment search",
-      "owner": "high-priority fix 2"
     }
   ]
 }
