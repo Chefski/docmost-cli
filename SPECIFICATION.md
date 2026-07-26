@@ -479,9 +479,17 @@ HTTP 401 → Re-authenticate (session auth) or report invalid API key
 HTTP 403 → Permission denied — include space/page context in error
 HTTP 404 → Resource not found — suggest checking ID/slug
 HTTP 422 → Validation error — show server's error message
-HTTP 429 → Rate limited — retry with backoff
-HTTP 5xx → Server error — show status + suggest checking Docmost logs
+HTTP 429 → Rate limited — retry replay-safe requests with backoff
+HTTP 5xx → Server error — retry replay-safe requests; never automatically replay ambiguous mutations
 ```
+
+Automatic transient retries are limited to idempotent HTTP methods and requests
+explicitly marked safe to replay. Non-idempotent create, import, duplicate, and
+upload requests are not retried after 429, 5xx, timeout, or other ambiguous
+failures because the server may already have committed the change. Session
+authentication may replay a request once after a 401 because the unauthorized
+request was rejected before the operation was accepted. `Retry-After` is honored
+for retryable responses, with a 60-second maximum delay.
 
 ---
 
