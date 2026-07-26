@@ -6,7 +6,7 @@ import pytest
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pages import (
-    PageImportPlacementError,
+    PageImportOverrideError,
     copy_page,
     create_page_via_import,
     delete_page,
@@ -377,7 +377,7 @@ class TestImportPage:
 
         with (
             DocmostClient(api_key_settings) as client,
-            pytest.raises(PageImportPlacementError) as exc,
+            pytest.raises(PageImportOverrideError) as exc,
         ):
             import_page(
                 client,
@@ -392,7 +392,7 @@ class TestImportPage:
         assert exc.value.result == {"id": "imported-page", "title": "Page"}
         captured = capsys.readouterr()
         assert captured.out == "imported-page\n"
-        assert "failed to move it under the requested parent" in captured.err
+        assert "failed to apply the requested override" in captured.err
 
 
 class TestGetSidebarPages:

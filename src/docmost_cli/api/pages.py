@@ -8,7 +8,8 @@ from docmost_cli.output.formatter import print_error, print_result
 
 __all__ = [
     "POSITION_FIRST",
-    "PageImportPlacementError",
+    "PageImportOverrideError",
+    "apply_import_overrides",
     "build_page_tree",
     "copy_page",
     "create_and_place_page",
@@ -35,8 +36,8 @@ __all__ = [
 POSITION_FIRST = "aaaaa"
 
 
-class PageImportPlacementError(SystemExit):
-    """Raised when a page is imported but its requested placement fails.
+class PageImportOverrideError(SystemExit):
+    """Raised when a page is imported but a requested override fails.
 
     The original import response and page ID remain available so callers can
     recover the page without retrying the import and creating a duplicate.
@@ -471,6 +472,44 @@ def export_page_archive(
     return response.content
 
 
+def apply_import_overrides(
+    client: DocmostClient,
+    *,
+    result: dict[str, Any],
+    title: str | None = None,
+    parent_page_id: str | None = None,
+) -> None:
+    """Apply metadata overrides after a successful single-page import.
+
+    Docmost's import controller ignores title and parent fields. This helper
+    keeps the post-import update/move sequence and partial-import recovery
+    consistent for CLI and API callers.
+    """
+    from docmost_cli.api.pagination import extract_id
+
+    page_id = extract_id(result)
+    try:
+        if title is not None:
+            update_page_meta(client, page_id=page_id, title=title)
+        if parent_page_id is not None:
+            move_page(
+                client,
+                page_id=page_id,
+                parent_page_id=parent_page_id,
+                position=POSITION_FIRST,
+            )
+    except SystemExit as exc:
+        print_result(
+            page_id,
+            f"Imported page {page_id}, but failed to apply the requested override(s).",
+        )
+        raise PageImportOverrideError(
+            page_id=page_id,
+            result=result,
+            cause=exc,
+        ) from exc
+
+
 def get_sidebar_pages(client: DocmostClient, space_id: str) -> dict[str, Any]:
     """Get page tree structure for a space.
 
@@ -510,31 +549,16 @@ def import_page(
     Returns:
         Raw API response dict (should contain new page ID).
     """
-    from docmost_cli.api.pagination import extract_id
-
     mime = "text/html" if file_name.lower().endswith((".html", ".htm")) else "text/markdown"
     files = {"file": (file_name, file_bytes, mime)}
     result = client.post_multipart("/pages/import", data={"spaceId": space_id}, files=files)
 
     if parent_page_id is not None:
-        page_id = extract_id(result)
-        try:
-            move_page(
-                client,
-                page_id=page_id,
-                parent_page_id=parent_page_id,
-                position=POSITION_FIRST,
-            )
-        except SystemExit as exc:
-            print_result(
-                page_id,
-                f"Imported page {page_id}, but failed to move it under the requested parent.",
-            )
-            raise PageImportPlacementError(
-                page_id=page_id,
-                result=result,
-                cause=exc,
-            ) from exc
+        apply_import_overrides(
+            client,
+            result=result,
+            parent_page_id=parent_page_id,
+        )
 
     return result
 
