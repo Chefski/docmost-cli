@@ -50,10 +50,11 @@ docmost\-cli\-page \- page operations for Docmost wiki
 .I page\-id
 .RB [ \-\-parent
 .IR id ]
+.RB [ \-\-root ]
 .RB [ \-\-space
 .IR slug ]
 .RB [ \-\-position
-.IR N ]
+.IR index ]
 .br
 .B docmost\-cli page duplicate
 .I page\-id
@@ -99,8 +100,7 @@ unless
 .B \-\-raw
 is specified.
 .PP
-Page creation uses the server\-side import endpoint for reliable
-Markdown\-to\-ProseMirror conversion.
+Page creation sends Markdown directly to the server's page creation endpoint.
 .SH SUBCOMMANDS
 .SS list
 List pages in a space.
@@ -139,7 +139,7 @@ Output the ProseMirror JSON representation instead of Markdown.
 Prepend YAML frontmatter containing page metadata
 (id, title, space, created, updated, creator).
 .SS create
-Create a new page via Markdown import.
+Create a new page from Markdown.
 .PP
 .I space\-slug
 identifies the space to create the page in.
@@ -220,13 +220,20 @@ At least one of the options below must be provided.
 .TP
 .BI \-\-parent " id"
 New parent page UUID.
-Omit to move the page to the root level.
+.TP
+.B \-\-root
+Move the page to the root level of its current space.
 .TP
 .BI \-\-space " slug"
 Move the page to a different space.
+Cannot be combined with
+.BR \-\-parent ,
+.BR \-\-root ,
+or
+.BR \-\-position .
 .TP
-.BI \-\-position " N"
-Position among siblings (zero\-based index).
+.BI \-\-position " index"
+Fractional index among siblings (5 to 12 characters).
 .SS duplicate
 Duplicate a page within the same space.
 .PP

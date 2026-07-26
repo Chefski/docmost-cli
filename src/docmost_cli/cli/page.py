@@ -92,7 +92,7 @@ def page_create_cmd(
     parent: str | None = typer.Option(None, "--parent", help="Parent page ID"),
     icon: str | None = typer.Option(None, "--icon", help="Page icon emoji"),
 ) -> None:
-    """Create a new page via Markdown import.
+    """Create a new page from Markdown.
 
     See also: page move (reposition), page children (list children).
     """
@@ -169,7 +169,12 @@ def page_delete_cmd(
 @page_app.command("move")
 def page_move_cmd(
     page_id: str = typer.Argument(help="Page ID to move"),
-    parent: str | None = typer.Option(None, "--parent", help="New parent page ID"),
+    parent: str | None = typer.Option(
+        None,
+        "--parent",
+        help="New parent page ID",
+    ),
+    root: bool = typer.Option(False, "--root", help="Move to the space root"),
     space: str | None = typer.Option(None, "--space", help="Target space slug"),
     position: str | None = typer.Option(None, "--position", help="Position among siblings"),
 ) -> None:
@@ -177,18 +182,28 @@ def page_move_cmd(
 
     See also: page children (find targets), page list --tree (view hierarchy).
     """
-    if parent is None and space is None and position is None:
-        print_error("At least one of --parent, --space, or --position is required.")
+    if parent is None and not root and space is None and position is None:
+        print_error("At least one of --parent, --root, --space, or --position is required.")
+    if root and parent is not None:
+        print_error("--root cannot be combined with --parent.")
+    if space is not None and (parent is not None or root or position is not None):
+        print_error("--space cannot be combined with --parent, --root, or --position.")
 
     client = get_client()
     target_space_id = None
     if space is not None:
         target_space_id = resolve_space_id(client, space)
 
+    target_parent = parent
+    if not root and space is None and parent is None and position is not None:
+        current_page = get_page_info(client, page_id)
+        current_parent = current_page.get("parentPageId")
+        target_parent = str(current_parent) if current_parent else None
+
     move_page(
         client,
         page_id=page_id,
-        parent_page_id=parent,
+        parent_page_id=target_parent,
         space_id=target_space_id,
         position=position,
     )
@@ -234,19 +249,15 @@ def page_get_cmd(
     client = get_client()
 
     if raw:
-        # Raw mode: reuse get_page_content which handles Enterprise/Community fallback
+        # Raw mode: reuse the page info response so metadata and content stay in sync.
         info = get_page_content(client, page_id)
-        pm_content = info.get("content")
-        if not pm_content:
-            print_error("No content available for raw output.", exit_code=1)
+        pm_content = info["content"]
         sys.stdout.write(json.dumps(pm_content, indent=2) + "\n")
         return
 
     # Normal mode: get content and convert to Markdown
     info = get_page_content(client, page_id)
-    pm_content = info.get("content")
-    if not pm_content:
-        print_error("Page has no content.", exit_code=1)
+    pm_content = info["content"]
 
     from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
 

@@ -235,22 +235,10 @@ class TestCommunityUpdate:
         """Creates new page, then deletes old one. Returns new ID."""
         new_page_id = "new-page-id-1234"
 
-        # 1. create_page_via_import -> POST /pages/import
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
-            json={"id": new_page_id},
-        )
-        # 2. move_page -> POST /pages/move (because parent_id is set)
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/move",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"data": {"id": new_page_id}},
         )
-        # 3. update_page_meta -> POST /pages/update (because icon is set)
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/update",
-            json={"data": {"id": new_page_id}},
-        )
-        # 4. delete_page -> POST /pages/delete
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/delete",
             json={"data": {}},
@@ -269,20 +257,19 @@ class TestCommunityUpdate:
 
         assert result_id == new_page_id
 
-        # Verify the call order
         requests = httpx_mock.get_requests()
         urls = [str(r.url) for r in requests]
-        assert f"{_TEST_URL}/api/pages/import" in urls[0]
-        assert f"{_TEST_URL}/api/pages/move" in urls[1]
-        assert f"{_TEST_URL}/api/pages/update" in urls[2]
-        assert f"{_TEST_URL}/api/pages/delete" in urls[3]
+        assert f"{_TEST_URL}/api/pages/create" in urls[0]
+        assert f"{_TEST_URL}/api/pages/delete" in urls[1]
+        assert json.loads(requests[0].content)["parentPageId"] == "parent-123"
+        assert json.loads(requests[0].content)["icon"] == "rocket"
 
     def test_no_parent_no_icon(self, httpx_mock) -> None:
         """Skips move and icon update when not needed."""
         new_page_id = "new-page-id-5678"
 
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"id": new_page_id},
         )
         httpx_mock.add_response(
@@ -303,7 +290,7 @@ class TestCommunityUpdate:
 
         assert result_id == new_page_id
         requests = httpx_mock.get_requests()
-        assert len(requests) == 2  # Only import + delete
+        assert len(requests) == 2  # Only create + delete
 
 
 # ---------------------------------------------------------------------------
@@ -357,7 +344,7 @@ class TestPushNoChanges:
 
 
 class TestPushNewPage:
-    """push_space creates new pages via import."""
+    """push_space creates new pages through /pages/create."""
 
     def test_create_new_page(self, httpx_mock, tmp_path: Path) -> None:
         new_page_id = "created-page-id-1"
@@ -372,9 +359,8 @@ class TestPushNewPage:
         )
 
         _mock_resolve_space(httpx_mock)
-        # create_page_via_import -> POST /pages/import
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"id": new_page_id},
         )
 
@@ -392,7 +378,7 @@ class TestPushNewPage:
         assert new_page_id in manifest["pages"]
 
     def test_create_new_page_with_parent_and_icon(self, httpx_mock, tmp_path: Path) -> None:
-        """New page with parent_id causes move, icon causes meta update."""
+        """New page sends parent and icon in the create request."""
         new_page_id = "created-page-id-2"
         parent_id = "existing-parent-id"
 
@@ -427,16 +413,8 @@ class TestPushNewPage:
 
         _mock_resolve_space(httpx_mock)
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"id": new_page_id},
-        )
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/move",
-            json={"data": {"id": new_page_id}},
-        )
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/update",
-            json={"data": {"id": new_page_id}},
         )
 
         with _make_client() as client:
@@ -444,6 +422,12 @@ class TestPushNewPage:
 
         assert result.created == 1
         assert result.unchanged == 1  # parent is unchanged
+        create_request = next(
+            request for request in httpx_mock.get_requests() if "/pages/create" in str(request.url)
+        )
+        create_body = json.loads(create_request.content)
+        assert create_body["parentPageId"] == parent_id
+        assert create_body["icon"] == "star"
 
 
 # ---------------------------------------------------------------------------
@@ -962,7 +946,7 @@ class TestPushDryRun:
             if any(
                 ep in str(r.url)
                 for ep in [
-                    "/pages/import",
+                    "/pages/create",
                     "/pages/delete",
                     "/pages/move",
                     "/pages/update",

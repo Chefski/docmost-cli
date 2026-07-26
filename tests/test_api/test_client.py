@@ -130,6 +130,27 @@ class TestMutationSafeRetries:
         assert len(requests) == 2
         assert requests[0].content == requests[1].content == b'{"pageId":"page-1"}'
 
+    def test_explicitly_safe_raw_post_retries_then_accepts_empty_response(
+        self, httpx_mock, api_key_settings, monkeypatch
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move-to-space",
+            status_code=503,
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move-to-space",
+            status_code=200,
+        )
+        with DocmostClient(api_key_settings) as client:
+            response = client.post_raw(
+                "/pages/move-to-space",
+                json={"pageId": "page-1", "spaceId": "space-2"},
+                retry_safe=True,
+            )
+        assert response.status_code == 200
+        assert len(httpx_mock.get_requests()) == 2
+
     def test_read_only_post_wrapper_opts_into_safe_retries(
         self,
         httpx_mock,

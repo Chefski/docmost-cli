@@ -140,9 +140,8 @@ def _mock_page_content(
     title: str,
     pm_content: dict | None = None,
 ) -> None:
-    """Add mocks for get_page_content (calls /pages/info then /pages/content)."""
+    """Add a /pages/info mock containing page content."""
     content = pm_content or _PM_DOC
-    # get_page_info -> POST /pages/info
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/info",
         json={
@@ -151,11 +150,6 @@ def _mock_page_content(
             "spaceId": "space-1",
             "content": content,
         },
-    )
-    # post_raw -> POST /pages/content (Enterprise endpoint — return 404 to use fallback)
-    httpx_mock.add_response(
-        url=f"{_TEST_URL}/api/pages/content",
-        status_code=404,
     )
 
 
