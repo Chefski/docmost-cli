@@ -103,6 +103,29 @@ def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
     return bindings
 
 
+def controller_routes(source: str) -> set[Route]:
+    """Extract literal GET/POST routes without parsing handler signatures."""
+    controller_match = re.search(r"@Controller\((.*?)\)", source, re.DOTALL)
+    if not controller_match:
+        raise AssertionError("controller source has no @Controller decorator")
+    raw_prefix = controller_match.group(1).strip()
+    prefix = _quoted_argument(raw_prefix) if raw_prefix else ""
+
+    routes: set[Route] = set()
+    for match in re.finditer(r"@(Get|Post)\((.*?)\)", source, re.DOTALL):
+        raw_path = match.group(2).strip()
+        if raw_path.startswith("["):
+            continue
+        path = _quoted_argument(raw_path) if raw_path else ""
+        routes.add(
+            Route(
+                method=match.group(1).upper(),
+                path=_normalize_path(prefix, path),
+            )
+        )
+    return routes
+
+
 def client_reference_routes(source: str) -> set[Route]:
     """Extract literal API method/path pairs from the Docmost web client."""
     return {
@@ -111,6 +134,44 @@ def client_reference_routes(source: str) -> set[Route]:
             r"\bapi\.(get|post)\s*(?:<[^;\n]+?>)?\s*\(\s*(['\"])(/[^'\"]+)\2",
             source,
             re.IGNORECASE,
+        )
+    }
+
+
+def client_multipart_fields(source: str, route: Route) -> set[str]:
+    """Extract FormData fields sent by the web client for one literal route."""
+    method = re.escape(route.method.lower())
+    path = re.escape(route.path)
+    request_pattern = re.compile(
+        rf"\bapi\.{method}\s*(?:<[^;\n]+?>)?\s*\(\s*"
+        rf"(['\"]){path}\1\s*,\s*([A-Za-z_]\w*)",
+        re.IGNORECASE,
+    )
+    matches = list(request_pattern.finditer(source))
+    if len(matches) != 1:
+        raise AssertionError(
+            f"expected one multipart client request for {route.method} {route.path}, "
+            f"found {len(matches)}"
+        )
+
+    request = matches[0]
+    form_name = request.group(2)
+    declarations = list(
+        re.finditer(
+            rf"\b(?:const|let)\s+{re.escape(form_name)}\s*=\s*new\s+FormData\(\s*\)",
+            source[: request.start()],
+        )
+    )
+    if not declarations:
+        raise AssertionError(
+            f"multipart request for {route.method} {route.path} has no FormData declaration"
+        )
+    form_source = source[declarations[-1].end() : request.start()]
+    return {
+        field
+        for _quote, field in re.findall(
+            rf"\b{re.escape(form_name)}\.(?:append|set)\(\s*(['\"])(.*?)\1",
+            form_source,
         )
     }
 
@@ -175,6 +236,28 @@ def interface_fields(source: str, interface_name: str) -> tuple[set[str], set[st
     return fields, required
 
 
+def class_inherits(
+    source: str,
+    class_name: str,
+    base_name: str,
+    *,
+    via: str | None = None,
+) -> bool:
+    """Return whether a DTO class extends the declared base relationship."""
+    if via is None:
+        expression = re.escape(base_name)
+    else:
+        expression = rf"{re.escape(via)}\(\s*{re.escape(base_name)}\s*\)"
+    return (
+        re.search(
+            rf"\bexport\s+class\s+{re.escape(class_name)}\s+extends\s+"
+            rf"{expression}\s*\{{",
+            source,
+        )
+        is not None
+    )
+
+
 def handler_multipart_fields(
     source: str,
     handler_name: str,
@@ -199,6 +282,19 @@ def handler_multipart_fields(
 
 def load_contract(path: Path = DEFAULT_CONTRACT) -> dict[str, Any]:
     return json.loads(path.read_text())
+
+
+def _controller_route_sources(docmost_repo: Path, route: Route) -> list[Path]:
+    controller_root = docmost_repo / "apps" / "server" / "src"
+    if not controller_root.is_dir():
+        raise AssertionError(f"missing upstream controller tree: {controller_root}")
+
+    matches: list[Path] = []
+    for source_path in controller_root.rglob("*.controller.ts"):
+        source = _read(source_path)
+        if route in controller_routes(source):
+            matches.append(source_path.relative_to(docmost_repo))
+    return matches
 
 
 def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
@@ -285,6 +381,34 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                     f"expected {sorted(expected_required)}, got {sorted(actual_required)}"
                 )
 
+            inheritance = schema.get("inheritance")
+            if schema.get("all_optional", False) and inheritance is None:
+                errors.append(
+                    f"{operation_name}: all_optional schema {schema['name']} must "
+                    "declare its inheritance relationship"
+                )
+            if inheritance is not None:
+                try:
+                    inheritance_source = _read(docmost_repo / inheritance["file"])
+                    relationship_exists = class_inherits(
+                        inheritance_source,
+                        inheritance["class"],
+                        schema["name"],
+                        via=inheritance.get("via"),
+                    )
+                except AssertionError as exc:
+                    errors.append(f"{operation_name}: {exc}")
+                else:
+                    if not relationship_exists:
+                        via = (
+                            f"{inheritance['via']}({schema['name']})"
+                            if inheritance.get("via")
+                            else schema["name"]
+                        )
+                        errors.append(
+                            f"{operation_name}: {inheritance['class']} no longer extends {via}"
+                        )
+
             schema_fields.update(actual_fields)
             if not schema.get("all_optional", False):
                 schema_required.update(actual_required)
@@ -303,6 +427,27 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                 f"sources; expected {sorted(schema_required)}, got {sorted(required_fields)}"
             )
 
+        multipart_client = operation.get("multipart_client")
+        file_fields = set(operation.get("file_fields", []))
+        if file_fields and multipart_client is None:
+            errors.append(f"{operation_name}: file_fields require a multipart_client source")
+        if multipart_client is not None:
+            try:
+                multipart_source = _read(docmost_repo / multipart_client["file"])
+                upstream_form_fields = client_multipart_fields(
+                    multipart_source,
+                    Route(operation["method"], operation["path"]),
+                )
+            except AssertionError as exc:
+                errors.append(f"{operation_name}: {exc}")
+            else:
+                upstream_file_fields = upstream_form_fields - allowed_fields
+                if upstream_file_fields != file_fields:
+                    errors.append(
+                        f"{operation_name}: multipart file fields changed; expected "
+                        f"{sorted(file_fields)}, got {sorted(upstream_file_fields)}"
+                    )
+
     for entry in contract["known_drift"]:
         if entry["kind"] != "endpoint":
             continue
@@ -313,12 +458,15 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                 f"known drift {route.method} {route.path}: missing upstream_absence source"
             )
             continue
+        controller_absence = False
         for upstream in absence_sources:
             try:
-                source = _read(docmost_repo / upstream["file"])
                 if upstream["kind"] == "controller":
-                    route_exists = route in controller_bindings(source)
+                    _read(docmost_repo / upstream["file"])
+                    controller_absence = True
+                    continue
                 elif upstream["kind"] == "client-reference":
+                    source = _read(docmost_repo / upstream["file"])
                     route_exists = route in client_reference_routes(source)
                 else:
                     raise AssertionError(f"unsupported upstream absence kind {upstream['kind']!r}")
@@ -330,6 +478,19 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                     f"known drift {route.method} {route.path}: endpoint now exists in "
                     f"{upstream['file']}; remove the allowlist entry"
                 )
+
+        if controller_absence:
+            try:
+                route_sources = _controller_route_sources(docmost_repo, route)
+            except AssertionError as exc:
+                errors.append(f"known drift {route.method} {route.path}: {exc}")
+            else:
+                if route_sources:
+                    locations = ", ".join(str(path) for path in route_sources)
+                    errors.append(
+                        f"known drift {route.method} {route.path}: endpoint now exists "
+                        f"in {locations}; remove the allowlist entry"
+                    )
 
     return errors
 

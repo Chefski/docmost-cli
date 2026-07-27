@@ -33,18 +33,27 @@ jobs:
       - name: Check out docmost-cli
         uses: actions/checkout@v4
 
+      - name: Read pinned Docmost ref
+        id: contract
+        shell: bash
+        run: |
+          echo "ref=$(python -c 'import json; print(json.load(open("tests/contracts/docmost-v0.95.0.json"))["docmost"]["ref"])')" >> "$GITHUB_OUTPUT"
+
       - name: Check out pinned Docmost contract sources
         uses: actions/checkout@v4
         with:
           repository: docmost/docmost
-          ref: 70d2ff86856f0ffa66b5c64d0dadac80133c8b5c
+          ref: ${{ steps.contract.outputs.ref }}
           path: .docmost-upstream
           sparse-checkout: |
+            apps/client/src/features/page/services/page-service.ts
             apps/client/src/features/search
-            apps/server/src/core
-            apps/server/src/database
-            apps/server/src/integrations/export
-            apps/server/src/integrations/import
+            apps/server/src
+
+      - name: Verify pinned Docmost checkout
+        shell: bash
+        run: |
+          test "$(git -C .docmost-upstream rev-parse HEAD)" = "${{ steps.contract.outputs.ref }}"
 
       - name: Set up Python
         uses: actions/setup-python@v5

@@ -109,6 +109,29 @@ class TestCreateSpace:
             "slug": "release-notes",
         }
 
+    def test_generates_distinct_slugs_for_non_ascii_names(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "space-ja"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "space-ar"},
+        )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="日本語")
+            create_space(client, name="العربية")
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert slugs[0].startswith("space-")
+        assert slugs[1].startswith("space-")
+        assert slugs[0] != slugs[1]
+
 
 class TestUpdateSpace:
     def test_updates_space(self, httpx_mock, api_key_settings) -> None:

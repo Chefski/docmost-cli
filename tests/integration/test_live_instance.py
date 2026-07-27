@@ -23,7 +23,6 @@ from docmost_cli.api.comments import create_comment, list_comments, update_comme
 from docmost_cli.api.pages import (
     POSITION_FIRST,
     copy_page,
-    create_and_place_page,
     delete_page,
     duplicate_page,
     get_page_content,
@@ -159,14 +158,20 @@ def test_safe_page_comment_attachment_and_sync_primitives(
     parent_id = _resource_id(parent_response)
     created_resources.page_ids.append(parent_id)
 
-    child_id = create_and_place_page(
+    child_response = import_page(
         integration_client,
         space_id=mutation_space_id,
-        title=f"Contract child {suffix}",
-        content="Child content",
-        parent_page_id=parent_id,
+        file_name=f"contract-child-{suffix}.md",
+        file_bytes=f"# Contract child {suffix}\n\nChild content".encode(),
     )
+    child_id = _resource_id(child_response)
     created_resources.page_ids.append(child_id)
+    move_page(
+        integration_client,
+        page_id=child_id,
+        parent_page_id=parent_id,
+        position=POSITION_FIRST,
+    )
     child_info = get_page_info(integration_client, child_id)
     assert child_info.get("parentPageId") == parent_id
 

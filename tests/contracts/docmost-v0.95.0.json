@@ -89,6 +89,9 @@
       "allowed_fields": ["attachmentId", "pageId"],
       "required_fields": ["pageId"],
       "file_fields": ["file"],
+      "multipart_client": {
+        "file": "apps/client/src/features/page/services/page-service.ts"
+      },
       "upstream": {
         "kind": "controller",
         "file": "apps/server/src/core/attachment/attachment.controller.ts",
@@ -243,6 +246,28 @@
         }
       ]
     },
+    "pages.create": {
+      "method": "POST",
+      "path": "/pages/create",
+      "edition": "community",
+      "allowed_fields": ["content", "format", "icon", "parentPageId", "spaceId", "title"],
+      "required_fields": ["spaceId"],
+      "upstream": {
+        "kind": "controller",
+        "file": "apps/server/src/core/page/page.controller.ts",
+        "handler": "create",
+        "body_types": ["CreatePageDto"]
+      },
+      "schema_sources": [
+        {
+          "kind": "class",
+          "file": "apps/server/src/core/page/dto/create-page.dto.ts",
+          "name": "CreatePageDto",
+          "fields": ["content", "format", "icon", "parentPageId", "spaceId", "title"],
+          "required": ["spaceId"]
+        }
+      ]
+    },
     "pages.duplicate": {
       "method": "POST",
       "path": "/pages/duplicate",
@@ -323,6 +348,9 @@
       "allowed_fields": ["spaceId"],
       "required_fields": ["spaceId"],
       "file_fields": ["file"],
+      "multipart_client": {
+        "file": "apps/client/src/features/page/services/page-service.ts"
+      },
       "upstream": {
         "kind": "controller",
         "file": "apps/server/src/integrations/import/import.controller.ts",
@@ -346,6 +374,9 @@
       "allowed_fields": ["source", "spaceId"],
       "required_fields": ["source", "spaceId"],
       "file_fields": ["file"],
+      "multipart_client": {
+        "file": "apps/client/src/features/page/services/page-service.ts"
+      },
       "upstream": {
         "kind": "controller",
         "file": "apps/server/src/integrations/import/import.controller.ts",
@@ -529,7 +560,12 @@
           "name": "CreatePageDto",
           "fields": ["content", "format", "icon", "parentPageId", "spaceId", "title"],
           "required": ["spaceId"],
-          "all_optional": true
+          "all_optional": true,
+          "inheritance": {
+            "file": "apps/server/src/core/page/dto/update-page.dto.ts",
+            "class": "UpdatePageDto",
+            "via": "PartialType"
+          }
         },
         {
           "kind": "class",
@@ -654,7 +690,12 @@
           "name": "CreateSpaceDto",
           "fields": ["description", "name", "slug"],
           "required": ["name", "slug"],
-          "all_optional": true
+          "all_optional": true,
+          "inheritance": {
+            "file": "apps/server/src/core/space/dto/update-space.dto.ts",
+            "class": "UpdateSpaceDto",
+            "via": "PartialType"
+          }
         },
         {
           "kind": "class",
@@ -714,52 +755,5 @@
       ]
     }
   },
-  "known_drift": [
-    {
-      "kind": "endpoint",
-      "method": "POST",
-      "path": "/pages/content",
-      "source": "src/docmost_cli/api/pages.py",
-      "replacement": "/pages/info",
-      "owner": "high-priority fix 1",
-      "upstream_absence": [
-        {
-          "kind": "controller",
-          "file": "apps/server/src/core/page/page.controller.ts"
-        }
-      ]
-    },
-    {
-      "kind": "endpoint",
-      "method": "POST",
-      "path": "/pages/copy",
-      "source": "src/docmost_cli/api/pages.py",
-      "replacement": "/pages/duplicate",
-      "owner": "high-priority fix 1",
-      "upstream_absence": [
-        {
-          "kind": "controller",
-          "file": "apps/server/src/core/page/page.controller.ts"
-        }
-      ]
-    },
-    {
-      "kind": "request-fields",
-      "method": "POST",
-      "path": "/pages/import",
-      "fields": ["parentPageId"],
-      "source": "src/docmost_cli/api/pages.py",
-      "replacement": "import then move to the requested parent",
-      "owner": "high-priority fix 3"
-    },
-    {
-      "kind": "request-fields",
-      "method": "POST",
-      "path": "/pages/move",
-      "fields": ["spaceId"],
-      "source": "src/docmost_cli/api/pages.py",
-      "replacement": "/pages/move-to-space",
-      "owner": "high-priority fix 1"
-    }
-  ]
+  "known_drift": []
 }

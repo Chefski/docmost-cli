@@ -1,5 +1,6 @@
 """Space API methods."""
 
+import hashlib
 import re
 from typing import Any
 
@@ -19,7 +20,8 @@ __all__ = [
 def _slug_from_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_")
     if not slug:
-        return "space"
+        digest = hashlib.sha256(name.encode()).hexdigest()[:12]
+        return f"space-{digest}"
     if len(slug) == 1:
         slug = f"{slug}-space"
     return slug[:100].rstrip("-_")

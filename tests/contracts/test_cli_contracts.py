@@ -21,6 +21,7 @@ from docmost_cli.api.attachments import (
 from docmost_cli.api.auth import SessionAuth
 from docmost_cli.api.comments import create_comment, list_comments, update_comment
 from docmost_cli.api.pages import (
+    create_page,
     delete_page,
     duplicate_page,
     export_page,
@@ -239,13 +240,7 @@ def test_literal_endpoint_inventory_handles_keyword_paths() -> None:
     ) == {("example.py", "POST", "/new-endpoint")}
 
 
-def test_known_drift_is_small_owned_and_actionable() -> None:
-    expected = {
-        ("endpoint", "POST", "/pages/content", ()),
-        ("endpoint", "POST", "/pages/copy", ()),
-        ("request-fields", "POST", "/pages/import", ("parentPageId",)),
-        ("request-fields", "POST", "/pages/move", ("spaceId",)),
-    }
+def test_known_drift_is_empty_after_contract_repairs() -> None:
     actual = {
         (
             entry["kind"],
@@ -255,49 +250,11 @@ def test_known_drift_is_small_owned_and_actionable() -> None:
         )
         for entry in CONTRACT["known_drift"]
     }
-    assert actual == expected
-    for entry in CONTRACT["known_drift"]:
-        assert entry["owner"].startswith("high-priority fix ")
-        assert entry["replacement"]
-        assert (ROOT / entry["source"]).is_file()
-        if entry["kind"] == "endpoint":
-            assert entry["upstream_absence"]
+    assert actual == set()
 
 
-def test_known_request_field_drift_matches_current_helpers() -> None:
-    move_request = _single_request(
-        lambda client: move_page(
-            client,
-            page_id="00000000-0000-4000-8000-000000000001",
-            space_id="00000000-0000-4000-8000-000000000002",
-            position="aaaaa",
-        )
-    )
-    import_request = _single_request(
-        lambda client: import_page(
-            client,
-            space_id="00000000-0000-4000-8000-000000000002",
-            file_name="contract.md",
-            file_bytes=b"# Contract",
-            parent_page_id="00000000-0000-4000-8000-000000000001",
-        )
-    )
-
-    observed: dict[tuple[str, str], set[str]] = {}
-    for request in (move_request, import_request):
-        matched = _operation_for(request)
-        assert matched is not None
-        _, operation = matched
-        assert set(operation["required_fields"]) <= set(request.fields)
-        unexpected = set(request.fields) - set(operation["allowed_fields"])
-        if unexpected:
-            observed[(request.method, request.path)] = unexpected
-    expected = {
-        (entry["method"], entry["path"]): set(entry["fields"])
-        for entry in CONTRACT["known_drift"]
-        if entry["kind"] == "request-fields"
-    }
-    assert observed == expected
+def test_no_known_request_field_drift_remains() -> None:
+    assert not [entry for entry in CONTRACT["known_drift"] if entry["kind"] == "request-fields"]
 
 
 def test_session_login_request_matches_pinned_contract(
@@ -396,6 +353,15 @@ def test_session_login_request_matches_pinned_contract(
             ),
         ),
         (
+            "pages.create",
+            lambda client: create_page(
+                client,
+                space_id="00000000-0000-4000-8000-000000000002",
+                title="Contract",
+                content="# Contract",
+            ),
+        ),
+        (
             "pages.duplicate",
             lambda client: duplicate_page(
                 client,
@@ -440,6 +406,14 @@ def test_session_login_request_matches_pinned_contract(
                 page_id="00000000-0000-4000-8000-000000000001",
                 parent_page_id="00000000-0000-4000-8000-000000000003",
                 position="aaaaa",
+            ),
+        ),
+        (
+            "pages.move-to-space",
+            lambda client: move_page(
+                client,
+                page_id="00000000-0000-4000-8000-000000000001",
+                space_id="00000000-0000-4000-8000-000000000002",
             ),
         ),
         (
