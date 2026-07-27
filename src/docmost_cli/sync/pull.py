@@ -732,7 +732,13 @@ def _recover_interrupted_publish(target: Path) -> None:
                 f"pull recovery cannot identify the previous target for '{target}'; "
                 f"preserving all transaction data for inspection"
             )
-        os.replace(backup_path, target)
+        try:
+            _rename_directory_noreplace(backup_path, target)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"pull recovery found an unexpected replacement at '{target}'; "
+                f"preserving all transaction data for inspection"
+            ) from exc
         _sync_directory(target.parent)
         actual_target = target_identity
         actual_backup = None
@@ -865,7 +871,7 @@ def _publish_staged_pull(
         _update_publish_journal(target, journal, "target-moved")
     except BaseException:
         try:
-            os.replace(backup_path, target)
+            _rename_directory_noreplace(backup_path, target)
             _sync_directory(target.parent)
             _remove_publish_journal(target)
         except OSError:
@@ -876,12 +882,12 @@ def _publish_staged_pull(
             assert expected_snapshot is None or isinstance(expected_snapshot, dict)
             _assert_target_unchanged(backup_path, expected_snapshot)
         except BaseException:
-            os.replace(backup_path, target)
+            _rename_directory_noreplace(backup_path, target)
             _sync_directory(target.parent)
             _remove_publish_journal(target)
             raise
     try:
-        os.replace(staging_path, target)
+        _rename_directory_noreplace(staging_path, target)
         _sync_directory(target.parent)
         _update_publish_journal(target, journal, "published")
     except BaseException:
@@ -889,7 +895,7 @@ def _publish_staged_pull(
             if not target.exists() and _path_identity(backup_path) == _payload_identity(
                 journal, "target_identity"
             ):
-                os.replace(backup_path, target)
+                _rename_directory_noreplace(backup_path, target)
                 _sync_directory(target.parent)
                 _remove_publish_journal(target)
         except OSError as rollback_error:

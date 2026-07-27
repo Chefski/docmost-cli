@@ -31,6 +31,7 @@ from docmost_cli.sync.pull import (
     _publish_staged_pull,
     _recover_interrupted_publish,
     _remove_publish_journal,
+    _rename_directory_noreplace,
     _snapshot_target,
     _staging_is_recovery_data,
     _sync_directory,
@@ -995,16 +996,17 @@ class TestPullAtomicPublication:
         staging = tmp_path / ".test.pull-staging-manual"
         staging.mkdir()
         (staging / "new.txt").write_text("new", encoding="utf-8")
-        real_replace = os.replace
+        real_noreplace = _rename_directory_noreplace
 
-        def fail_staging_publish(
-            source: str | os.PathLike[str], destination: str | os.PathLike[str]
-        ) -> None:
-            if Path(source) == staging:
+        def fail_staging_publish(source: Path, destination: Path) -> None:
+            if source == staging:
                 raise OSError("simulated publish failure")
-            real_replace(source, destination)
+            real_noreplace(source, destination)
 
-        monkeypatch.setattr("docmost_cli.sync.pull.os.replace", fail_staging_publish)
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._rename_directory_noreplace",
+            fail_staging_publish,
+        )
         monkeypatch.setattr(
             "docmost_cli.sync.pull._atomic_exchange_directories",
             lambda _left, _right: False,
@@ -1422,6 +1424,42 @@ class TestPullAtomicPublication:
         assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
         assert _publish_journal_path(target).exists()
 
+    def test_recovery_does_not_replace_target_appearing_during_restore(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        backup = _temporary_sibling(target, "pull-backup")
+        backup.rmdir()
+        journal = _write_publish_journal(target, staging, backup)
+        os.replace(target, backup)
+        _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
+        real_noreplace = _rename_directory_noreplace
+
+        def recreate_before_restore(source: Path, destination: Path) -> None:
+            if source == backup and destination == target:
+                target.mkdir()
+                (target / "replacement.txt").write_text("replacement", encoding="utf-8")
+            real_noreplace(source, destination)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._rename_directory_noreplace",
+            recreate_before_restore,
+        )
+
+        with pytest.raises(RuntimeError, match="unexpected replacement"):
+            _recover_interrupted_publish(target)
+
+        assert (target / "replacement.txt").read_text(encoding="utf-8") == "replacement"
+        assert (backup / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
+        assert _publish_journal_path(target).exists()
+
     def test_fsync_failure_after_publish_preserves_backup_and_journal(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -1513,6 +1551,84 @@ class TestPullAtomicPublication:
         assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
         assert not list(tmp_path.glob(".test.pull-backup-*"))
         assert not _publish_journal_path(target).exists()
+
+    def test_fsync_failure_does_not_overwrite_recreated_target(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_sync_directory = _sync_directory
+        sync_count = 0
+
+        def fail_after_recreation(path: Path) -> None:
+            nonlocal sync_count
+            sync_count += 1
+            if sync_count == 2:
+                target.mkdir()
+                (target / "replacement.txt").write_text("replacement", encoding="utf-8")
+                raise OSError("simulated first rename fsync failure")
+            real_sync_directory(path)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            lambda _left, _right: False,
+        )
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._sync_directory",
+            fail_after_recreation,
+        )
+
+        with pytest.raises(OSError, match="simulated first rename fsync failure"):
+            _publish_staged_pull(staging, target)
+
+        backups = list(tmp_path.glob(".test.pull-backup-*"))
+        assert (target / "replacement.txt").read_text(encoding="utf-8") == "replacement"
+        assert len(backups) == 1
+        assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
+        assert _publish_journal_path(target).exists()
+
+    def test_fallback_publish_does_not_replace_recreated_target(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_replace = os.replace
+
+        def recreate_after_target_move(
+            source: str | os.PathLike[str],
+            destination: str | os.PathLike[str],
+        ) -> None:
+            real_replace(source, destination)
+            if Path(source) == target:
+                target.mkdir()
+                (target / "replacement.txt").write_text("replacement", encoding="utf-8")
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            lambda _left, _right: False,
+        )
+        monkeypatch.setattr("docmost_cli.sync.pull.os.replace", recreate_after_target_move)
+
+        with pytest.raises(FileExistsError):
+            _publish_staged_pull(staging, target)
+
+        backups = list(tmp_path.glob(".test.pull-backup-*"))
+        assert (target / "replacement.txt").read_text(encoding="utf-8") == "replacement"
+        assert len(backups) == 1
+        assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
+        assert _publish_journal_path(target).exists()
 
     def test_initial_target_appearance_is_not_replaced(
         self,
