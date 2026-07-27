@@ -16,6 +16,7 @@
   remain readable but require reconciliation or `--force` before mutation
 - Guide conflict recovery through a separate pull directory so local edits are
   not overwritten, and document the current server API's non-atomic preflight boundary
+- Match current Docmost page routes for creation, cross-space copy/move, root moves, and content retrieval
 
 ## 0.4.0 (2026-03-22)
 

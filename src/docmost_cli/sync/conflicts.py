@@ -47,6 +47,7 @@ class RemotePreflight:
     conflicts: list[RemoteConflict] = field(default_factory=list)
     missing_page_ids: set[str] = field(default_factory=set)
     missing_attachment_ids: set[str] = field(default_factory=set)
+    reassigned_attachment_ids: set[str] = field(default_factory=set)
 
     @property
     def conflict_page_ids(self) -> set[str]:
@@ -278,7 +279,11 @@ def _verify_changed_attachment_revisions(
 ) -> None:
     """Check remote revisions for locally changed in-place attachment replacements."""
     from docmost_cli.api.attachments import download_attachment
-    from docmost_cli.sync.assets import compute_bytes_hash, compute_file_hash
+    from docmost_cli.sync.assets import (
+        compute_bytes_hash,
+        compute_file_hash,
+        discover_local_assets,
+    )
     from docmost_cli.sync.diff import ChangeType
 
     manifest_assets = manifest.get("assets", {})
@@ -290,14 +295,20 @@ def _verify_changed_attachment_revisions(
         if ChangeType.ATTACHMENT_CHANGED not in change.changes:
             continue
         entry = change.manifest_entry or {}
+        referenced_paths = {
+            reference.relative_path
+            for reference in discover_local_assets(change.local_body or "", dir_path)
+        }
         for raw_attachment_id in entry.get("attachment_ids", []):
             attachment_id = str(raw_attachment_id)
             if not attachment_id or attachment_id in seen_ids:
                 continue
-            seen_ids.add(attachment_id)
             asset = manifest_assets.get(attachment_id)
             if not isinstance(asset, dict) or not asset.get("path"):
                 continue
+            if str(asset["path"]) not in referenced_paths:
+                continue
+            seen_ids.add(attachment_id)
             root = dir_path.resolve()
             local_path = (root / str(asset["path"])).resolve()
             try:
@@ -327,6 +338,26 @@ def _verify_changed_attachment_revisions(
 
             expected_updated_at = _asset_updated_at(asset)
             current_updated_at = _asset_updated_at(current)
+            expected_page_id = str(asset.get("page_id") or "")
+            current_page_id = str(current.get("pageId") or "")
+            if current_page_id != expected_page_id:
+                result.reassigned_attachment_ids.add(attachment_id)
+                result.conflicts.append(
+                    RemoteConflict(
+                        page_id=attachment_id,
+                        title=f"{title} attachment {file_name}",
+                        filename=str(asset["path"]),
+                        reason=(
+                            "attachment ownership changed since the last pull"
+                            if expected_page_id
+                            else "manifest has no compatible attachment owner"
+                        ),
+                        expected_updated_at=expected_updated_at,
+                        current_updated_at=current_updated_at,
+                    )
+                )
+                continue
+
             expected_hash = asset.get("content_hash")
             if not isinstance(expected_hash, str) or not expected_hash.startswith("sha256:"):
                 result.conflicts.append(

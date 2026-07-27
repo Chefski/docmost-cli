@@ -141,12 +141,51 @@ def push_space(
             )
         )
 
+    if preflight.reassigned_attachment_ids:
+        reassigned = ", ".join(sorted(preflight.reassigned_attachment_ids))
+        print_error(
+            "Cannot replace attachments that now belong to another page "
+            f"({reassigned}). No changes were pushed.\n"
+            + format_reconciliation_guidance(
+                space_slug=space_slug,
+                dir_path=dir_path,
+                local_files_unchanged=True,
+            )
+        )
+
     # --- Execute changes ---
 
     id_remap: dict[str, str] = {}  # old_id -> new_id
     manifest.setdefault("assets", {})
-    revision_refresh_ids: set[str] = set()
     forced_conflict_ids = preflight.conflict_page_ids if force else set()
+
+    def refresh_revision(page_id: str) -> None:
+        """Persist the canonical state immediately after a page's last mutation."""
+        page = fetch_server_page(
+            client,
+            page_id,
+            failure_suffix=(
+                "The page may have been updated, but the manifest was not saved.\n"
+                + format_reconciliation_guidance(
+                    space_slug=space_slug,
+                    dir_path=dir_path,
+                    local_files_unchanged=False,
+                )
+            ),
+        )
+        if page is None:
+            print_error(
+                f"Page {page_id} disappeared after it was updated. "
+                "The manifest was not saved.\n"
+                + format_reconciliation_guidance(
+                    space_slug=space_slug,
+                    dir_path=dir_path,
+                    local_files_unchanged=False,
+                )
+            )
+        entry = manifest["pages"].get(page_id)
+        if entry is not None:
+            entry["server_revision"] = build_server_revision(page)
 
     # Phase A: Create new pages (topological order)
     existing_ids = set(manifest.get("pages", {}).keys())
@@ -202,7 +241,7 @@ def push_space(
             content_hash=content_hash,
             attachment_ids=attachment_ids,
         )
-        revision_refresh_ids.add(new_id)
+        refresh_revision(new_id)
         existing_ids.add(new_id)
         result.created += 1
 
@@ -264,8 +303,8 @@ def push_space(
             attachment_ids=attachment_ids,
             server_revision=(change.manifest_entry or {}).get("server_revision"),
         )
-        if page_id not in forced_conflict_ids:
-            revision_refresh_ids.add(page_id)
+        if ChangeType.MOVED not in change.changes and page_id not in forced_conflict_ids:
+            refresh_revision(page_id)
         result.updated += 1
 
     # Phase B2: Move pages after any content/metadata updates have succeeded.
@@ -293,7 +332,7 @@ def push_space(
         if page_id in manifest["pages"]:
             manifest["pages"][page_id]["parent_id"] = parent_id
         if page_id not in forced_conflict_ids:
-            revision_refresh_ids.add(page_id)
+            refresh_revision(page_id)
         result.moved += 1
 
     # Phase C: Deletions
@@ -314,37 +353,6 @@ def push_space(
 
     # Legacy field retained in the result contract; core page updates preserve IDs.
     result.id_remaps = id_remap
-
-    # Persist the canonical post-write state. Pages deliberately forced through
-    # a conflict keep their old baseline so a later non-forced push still
-    # requires a pull rather than silently treating a mixed local/remote state
-    # as fully reconciled.
-    for page_id in sorted(revision_refresh_ids):
-        page = fetch_server_page(
-            client,
-            page_id,
-            failure_suffix=(
-                "The page may have been updated, but the manifest was not saved.\n"
-                + format_reconciliation_guidance(
-                    space_slug=space_slug,
-                    dir_path=dir_path,
-                    local_files_unchanged=False,
-                )
-            ),
-        )
-        if page is None:
-            print_error(
-                f"Page {page_id} disappeared after it was updated. "
-                "The manifest was not saved.\n"
-                + format_reconciliation_guidance(
-                    space_slug=space_slug,
-                    dir_path=dir_path,
-                    local_files_unchanged=False,
-                )
-            )
-        entry = manifest["pages"].get(page_id)
-        if entry is not None:
-            entry["server_revision"] = build_server_revision(page)
 
     # Save manifest
     save_manifest(dir_path, manifest)

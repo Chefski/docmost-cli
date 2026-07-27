@@ -273,6 +273,7 @@ class TestVerifyRemoteRevisions:
         page = _server_page()
         change = _change(build_server_revision(page))
         change.changes.add(ChangeType.ATTACHMENT_CHANGED)
+        change.local_body = f"![Architecture]({relative_path})\n"
         assert change.manifest_entry is not None
         change.manifest_entry["attachment_ids"] = [attachment_id]
         manifest = {

@@ -148,7 +148,6 @@ def _mock_page_content(
 ) -> None:
     """Add a mock for the canonical page-state fetch."""
     content = pm_content or _PM_DOC
-    # get_page_info -> POST /pages/info
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/info",
         json={

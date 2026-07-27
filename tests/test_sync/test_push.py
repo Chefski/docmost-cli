@@ -284,22 +284,10 @@ class TestCommunityUpdate:
         """Creates new page, then deletes old one. Returns new ID."""
         new_page_id = "new-page-id-1234"
 
-        # 1. create_page_via_import -> POST /pages/import
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
-            json={"id": new_page_id},
-        )
-        # 2. move_page -> POST /pages/move (because parent_id is set)
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/move",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"data": {"id": new_page_id}},
         )
-        # 3. update_page_meta -> POST /pages/update (because icon is set)
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/update",
-            json={"data": {"id": new_page_id}},
-        )
-        # 4. delete_page -> POST /pages/delete
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/delete",
             json={"data": {}},
@@ -318,20 +306,19 @@ class TestCommunityUpdate:
 
         assert result_id == new_page_id
 
-        # Verify the call order
         requests = httpx_mock.get_requests()
         urls = [str(r.url) for r in requests]
-        assert f"{_TEST_URL}/api/pages/import" in urls[0]
-        assert f"{_TEST_URL}/api/pages/move" in urls[1]
-        assert f"{_TEST_URL}/api/pages/update" in urls[2]
-        assert f"{_TEST_URL}/api/pages/delete" in urls[3]
+        assert f"{_TEST_URL}/api/pages/create" in urls[0]
+        assert f"{_TEST_URL}/api/pages/delete" in urls[1]
+        assert json.loads(requests[0].content)["parentPageId"] == "parent-123"
+        assert json.loads(requests[0].content)["icon"] == "rocket"
 
     def test_no_parent_no_icon(self, httpx_mock) -> None:
         """Skips move and icon update when not needed."""
         new_page_id = "new-page-id-5678"
 
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"id": new_page_id},
         )
         httpx_mock.add_response(
@@ -352,7 +339,7 @@ class TestCommunityUpdate:
 
         assert result_id == new_page_id
         requests = httpx_mock.get_requests()
-        assert len(requests) == 2  # Only import + delete
+        assert len(requests) == 2  # Only create + delete
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +393,7 @@ class TestPushNoChanges:
 
 
 class TestPushNewPage:
-    """push_space creates new pages via import."""
+    """push_space creates new pages through /pages/create."""
 
     def test_create_new_page(self, httpx_mock, tmp_path: Path) -> None:
         new_page_id = "created-page-id-1"
@@ -421,9 +408,8 @@ class TestPushNewPage:
         )
 
         _mock_resolve_space(httpx_mock)
-        # create_page_via_import -> POST /pages/import
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"id": new_page_id},
         )
         _mock_page_info(
@@ -445,7 +431,7 @@ class TestPushNewPage:
         assert new_page_id in manifest["pages"]
 
     def test_create_new_page_with_parent_and_icon(self, httpx_mock, tmp_path: Path) -> None:
-        """New page with parent_id causes move, icon causes meta update."""
+        """New page sends parent and icon in the create request."""
         new_page_id = "created-page-id-2"
         parent_id = "existing-parent-id"
 
@@ -480,16 +466,8 @@ class TestPushNewPage:
 
         _mock_resolve_space(httpx_mock)
         httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/import",
+            url=f"{_TEST_URL}/api/pages/create",
             json={"id": new_page_id},
-        )
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/move",
-            json={"data": {"id": new_page_id}},
-        )
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/update",
-            json={"data": {"id": new_page_id}},
         )
         _mock_page_info(
             httpx_mock,
@@ -506,6 +484,12 @@ class TestPushNewPage:
 
         assert result.created == 1
         assert result.unchanged == 1  # parent is unchanged
+        create_request = next(
+            request for request in httpx_mock.get_requests() if "/pages/create" in str(request.url)
+        )
+        create_body = json.loads(create_request.content)
+        assert create_body["parentPageId"] == parent_id
+        assert create_body["icon"] == "star"
 
 
 # ---------------------------------------------------------------------------
@@ -571,6 +555,92 @@ class TestPushContentUpdate:
         # Manifest should be updated with new hash
         manifest = load_manifest(target)
         assert manifest["pages"][FAKE_PAGE_ID]["content_hash"] == compute_content_hash(new_body)
+
+    def test_each_page_revision_is_refreshed_before_the_next_mutation(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        old_body = "Old content.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="Page A",
+                    filename="a.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                ),
+                FAKE_PAGE_ID_2: build_page_entry(
+                    title="Page B",
+                    filename="b.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                ),
+            },
+        )
+        _write_page(
+            target,
+            "a.md",
+            page_id=FAKE_PAGE_ID,
+            title="Page A",
+            body="Updated A.\n",
+        )
+        _write_page(
+            target,
+            "b.md",
+            page_id=FAKE_PAGE_ID_2,
+            title="Page B",
+            body="Updated B.\n",
+        )
+
+        _mock_resolve_space(httpx_mock)
+        _mock_page_info(httpx_mock, _server_page(FAKE_PAGE_ID, title="Page A"))
+        _mock_page_info(httpx_mock, _server_page(FAKE_PAGE_ID_2, title="Page B"))
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="Page A",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID_2}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID_2,
+                title="Page B",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target)
+
+        assert result.updated == 2
+        mutation_and_refresh = [
+            (request.url.path, json.loads(request.content).get("pageId"))
+            for request in httpx_mock.get_requests()
+            if request.url.path in {"/api/pages/update", "/api/pages/info"}
+        ]
+        assert mutation_and_refresh == [
+            ("/api/pages/info", FAKE_PAGE_ID),
+            ("/api/pages/info", FAKE_PAGE_ID_2),
+            ("/api/pages/update", FAKE_PAGE_ID),
+            ("/api/pages/info", FAKE_PAGE_ID),
+            ("/api/pages/update", FAKE_PAGE_ID_2),
+            ("/api/pages/info", FAKE_PAGE_ID_2),
+        ]
 
 
 # ---------------------------------------------------------------------------
@@ -762,6 +832,149 @@ class TestPushAttachmentUpdate:
             updated_manifest["assets"][attachment_id]["server_updated_at"]
             == "2026-01-02T00:00:00.000Z"
         )
+
+    def test_removed_asset_reference_is_not_checked_or_replaced(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        attachment_id = "019c0000-1111-7222-8333-444444444444"
+        relative_path = f"files/{attachment_id}/diagram.png"
+        old_body = f"![Architecture]({relative_path})\n"
+        new_body = "The diagram was removed.\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="my-page.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(old_body),
+                    attachment_ids=[attachment_id],
+                )
+            },
+        )
+        _write_page(
+            target,
+            "my-page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body=new_body,
+        )
+        asset = target / relative_path
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"old-image-bytes")
+        pulled_asset_hash = compute_file_hash(asset)
+        asset.write_bytes(b"locally-edited-unused-bytes")
+        manifest = load_manifest(target)
+        manifest["assets"] = {
+            attachment_id: {
+                "file_name": "diagram.png",
+                "path": relative_path,
+                "mime_type": "image/png",
+                "size": 3,
+                "page_id": FAKE_PAGE_ID,
+                "content_hash": pulled_asset_hash,
+                "server_updated_at": "2026-01-01T00:00:00.000Z",
+                "server_path": f"/api/files/{attachment_id}/diagram.png",
+            }
+        }
+        save_manifest(target, manifest)
+
+        _mock_resolve_space(httpx_mock)
+        _mock_page_info(httpx_mock, _server_page(FAKE_PAGE_ID, title="My Page"))
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"data": {"id": FAKE_PAGE_ID}},
+        )
+        _mock_page_info(
+            httpx_mock,
+            _server_page(
+                FAKE_PAGE_ID,
+                title="My Page",
+                updated_at="2026-01-02T00:00:00.000Z",
+            ),
+        )
+
+        with _make_client() as client:
+            result = push_space(client, "eng", target)
+
+        assert result.updated == 1
+        urls = [str(request.url) for request in httpx_mock.get_requests()]
+        assert f"{_TEST_URL}/api/files/info" not in urls
+        assert f"{_TEST_URL}/api/files/upload" not in urls
+        assert load_manifest(target)["pages"][FAKE_PAGE_ID].get("attachment_ids") is None
+
+    def test_changed_remote_attachment_owner_aborts_before_replacement(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        attachment_id = "019c0000-1111-7222-8333-444444444444"
+        relative_path = f"files/{attachment_id}/diagram.png"
+        body = f"![Architecture]({relative_path})\n"
+        target = _setup_synced_dir(
+            tmp_path,
+            pages={
+                FAKE_PAGE_ID: build_page_entry(
+                    title="My Page",
+                    filename="my-page.md",
+                    parent_id=None,
+                    icon="",
+                    content_hash=compute_content_hash(body),
+                    attachment_ids=[attachment_id],
+                )
+            },
+        )
+        _write_page(
+            target,
+            "my-page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body=body,
+        )
+        asset = target / relative_path
+        asset.parent.mkdir(parents=True)
+        asset.write_bytes(b"old-image-bytes")
+        pulled_asset_hash = compute_file_hash(asset)
+        asset.write_bytes(b"new-image-bytes")
+        manifest = load_manifest(target)
+        manifest["assets"] = {
+            attachment_id: {
+                "file_name": "diagram.png",
+                "path": relative_path,
+                "mime_type": "image/png",
+                "size": 3,
+                "page_id": FAKE_PAGE_ID,
+                "content_hash": pulled_asset_hash,
+                "server_updated_at": "2026-01-01T00:00:00.000Z",
+                "server_path": f"/api/files/{attachment_id}/diagram.png",
+            }
+        }
+        save_manifest(target, manifest)
+
+        _mock_resolve_space(httpx_mock)
+        _mock_page_info(httpx_mock, _server_page(FAKE_PAGE_ID, title="My Page"))
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/files/info",
+            json={
+                "id": attachment_id,
+                "fileName": "diagram.png",
+                "mimeType": "image/png",
+                "fileSize": 3,
+                "pageId": FAKE_PAGE_ID_2,
+                "updatedAt": "2026-01-02T00:00:00.000Z",
+            },
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            push_space(client, "eng", target, force=True)
+
+        urls = [str(request.url) for request in httpx_mock.get_requests()]
+        assert f"{_TEST_URL}/api/files/{attachment_id}/diagram.png" not in urls
+        assert f"{_TEST_URL}/api/files/upload" not in urls
+        assert f"{_TEST_URL}/api/pages/update" not in urls
 
 
 # ---------------------------------------------------------------------------
@@ -1195,7 +1408,7 @@ class TestPushDryRun:
             if any(
                 ep in str(r.url)
                 for ep in [
-                    "/pages/import",
+                    "/pages/create",
                     "/pages/delete",
                     "/pages/move",
                     "/pages/update",
