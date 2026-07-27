@@ -163,6 +163,49 @@ class TestVerifyRemoteRevisions:
         assert "no longer exists on the server" in error
         assert _PAGE_ID in error
 
+    def test_wrong_page_response_aborts_instead_of_using_its_revision(
+        self,
+        httpx_mock,
+        capsys,
+    ) -> None:
+        _mock_page(httpx_mock, _server_page(id="different-page"))
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(_server_page()))],
+            )
+
+        assert "did not contain page state" in " ".join(capsys.readouterr().err.split())
+
+    def test_malformed_non_null_atomic_content_aborts(
+        self,
+        httpx_mock,
+        capsys,
+    ) -> None:
+        _mock_page(httpx_mock, _server_page(content="not-prosemirror"))
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(_server_page()))],
+            )
+
+        assert "invalid page content" in " ".join(capsys.readouterr().err.split())
+
+    def test_null_atomic_content_is_a_valid_empty_page(self, httpx_mock) -> None:
+        page = _server_page(content=None)
+        _mock_page(httpx_mock, page)
+
+        with _make_client() as client:
+            result = verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert result.conflicts == []
+        assert result.pages[_PAGE_ID]["content"] is None
+
     def test_conflict_details_preserve_titles_with_rich_markup(self, httpx_mock, capsys) -> None:
         pulled = _server_page()
         _mock_page(httpx_mock, _server_page(title="Changed remotely"))
@@ -226,7 +269,12 @@ class TestVerifyRemoteRevisions:
         _mock_page(httpx_mock, page_without_content)
         httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/content",
-            json={"data": {"content": page["content"]}},
+            json={
+                "data": {
+                    "content": page["content"],
+                    "updatedAt": page["updatedAt"],
+                }
+            },
         )
 
         with _make_client() as client:
@@ -237,6 +285,111 @@ class TestVerifyRemoteRevisions:
 
         assert result.conflicts == []
         assert result.pages[_PAGE_ID]["content"] == page["content"]
+
+    def test_each_legacy_content_page_identifier_must_match(self, httpx_mock, capsys) -> None:
+        page = _server_page()
+        page_without_content = {key: value for key, value in page.items() if key != "content"}
+        _mock_page(httpx_mock, page_without_content)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/content",
+            json={
+                "data": {
+                    "id": _PAGE_ID,
+                    "pageId": "different-page",
+                    "content": page["content"],
+                    "updatedAt": page["updatedAt"],
+                }
+            },
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert "content for a different page" in " ".join(capsys.readouterr().err.split())
+
+    def test_stable_unversioned_legacy_content_forms_a_safe_baseline(
+        self,
+        httpx_mock,
+    ) -> None:
+        page = _server_page()
+        page_without_content = {key: value for key, value in page.items() if key != "content"}
+        for _ in range(2):
+            _mock_page(httpx_mock, page_without_content)
+            httpx_mock.add_response(
+                url=f"{_TEST_URL}/api/pages/content",
+                json={"data": {"content": page["content"]}},
+            )
+
+        with _make_client() as client:
+            result = verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert result.conflicts == []
+        assert result.pages[_PAGE_ID]["content"] == page["content"]
+
+    def test_changed_unversioned_content_retries_until_two_samples_match(
+        self,
+        httpx_mock,
+    ) -> None:
+        latest_content = {"type": "doc", "content": [{"type": "paragraph", "attrs": {"id": "b"}}]}
+        expected_page = _server_page(content=latest_content)
+        page_without_content = {
+            key: value for key, value in expected_page.items() if key != "content"
+        }
+        samples = [
+            {"type": "doc", "content": [{"type": "paragraph", "attrs": {"id": "a"}}]},
+            latest_content,
+            latest_content,
+        ]
+        for content in samples:
+            _mock_page(httpx_mock, page_without_content)
+            httpx_mock.add_response(
+                url=f"{_TEST_URL}/api/pages/content",
+                json={"data": {"content": content}},
+            )
+
+        with _make_client() as client:
+            result = verify_remote_revisions(
+                client,
+                [_change(build_server_revision(expected_page))],
+            )
+
+        assert result.conflicts == []
+        assert result.pages[_PAGE_ID]["content"] == latest_content
+
+    def test_repeatedly_changing_unversioned_content_aborts(
+        self,
+        httpx_mock,
+        capsys,
+    ) -> None:
+        page = _server_page()
+        page_without_content = {key: value for key, value in page.items() if key != "content"}
+        for node_id in ("a", "b", "c"):
+            _mock_page(httpx_mock, page_without_content)
+            httpx_mock.add_response(
+                url=f"{_TEST_URL}/api/pages/content",
+                json={
+                    "data": {
+                        "content": {
+                            "type": "doc",
+                            "content": [{"type": "paragraph", "attrs": {"id": node_id}}],
+                        }
+                    }
+                },
+            )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert "changed repeatedly" in " ".join(capsys.readouterr().err.split())
 
     def test_missing_content_endpoint_aborts_instead_of_fingerprinting_blank_page(
         self,

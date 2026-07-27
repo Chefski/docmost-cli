@@ -381,3 +381,23 @@ class TestBuildPageEntry:
         )
 
         assert entry["server_revision"] == revision
+
+    def test_positional_rich_content_argument_remains_compatible(self) -> None:
+        rich_content = {
+            "guard_version": 1,
+            "source": "prosemirror",
+            "unsafe_features": [],
+        }
+
+        entry = build_page_entry(
+            "Page",
+            "Page--abcd1234.md",
+            None,
+            "",
+            "sha256:content",
+            [],
+            rich_content,
+        )
+
+        assert entry["rich_content"] == rich_content
+        assert "server_revision" not in entry

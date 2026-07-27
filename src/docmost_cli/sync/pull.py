@@ -84,7 +84,12 @@ def pull_space(
         build_asset_entry,
         collect_attachment_ids,
     )
-    from docmost_cli.sync.conflicts import fetch_server_page
+    from docmost_cli.sync.conflicts import (
+        fetch_server_page,
+        get_server_revision_token,
+        server_page_can_use_canonical_revision,
+        server_page_revision_is_verified,
+    )
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         build_manifest,
@@ -157,30 +162,33 @@ def pull_space(
                 )
             assert fetched_page is not None
             server_page = fetched_page
+            revision_verified = server_page_revision_is_verified(server_page)
             pm_content = server_page.get("content")
-            updated_at = server_page.get("updatedAt")
-            expected_updated_at = updated_at if isinstance(updated_at, str) else None
-            try:
-                canonical_markdown = fetch_canonical_markdown(
-                    client,
-                    page_id,
-                    expected_updated_at=expected_updated_at,
-                )
-            except PageRevisionChangedError:
-                if revision_attempt == 2:
-                    print_error(
-                        f"Page '{title}' changed repeatedly during pull. "
-                        "Wait for edits to finish and retry."
+            expected_updated_at = get_server_revision_token(server_page.get("updatedAt"))
+            if server_page_can_use_canonical_revision(server_page):
+                try:
+                    canonical_markdown = fetch_canonical_markdown(
+                        client,
+                        page_id,
+                        expected_updated_at=expected_updated_at,
                     )
-                _err.print(f"  [yellow]Page '{title}' changed during pull; retrying.[/yellow]")
-                continue
+                except PageRevisionChangedError:
+                    if revision_attempt == 2:
+                        print_error(
+                            f"Page '{title}' changed repeatedly during pull. "
+                            "Wait for edits to finish and retry."
+                        )
+                    _err.print(f"  [yellow]Page '{title}' changed during pull; retrying.[/yellow]")
+                    continue
+            else:
+                canonical_markdown = None
             break
 
         title = str(server_page.get("title") or title)
         parent_id = server_page.get("parentPageId", page_info["parent_id"])
         icon = str(server_page.get("icon") or "")
         rich_content = build_pulled_rich_content_state(dir_path, page_id, pm_content)
-        if expected_updated_at is None:
+        if expected_updated_at is None or not revision_verified:
             rich_content["unsafe_features"].append("conversion:unverified-revision")
             rich_content["unsafe_features"].sort()
 
@@ -252,8 +260,8 @@ def pull_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
-            server_revision=build_server_revision(server_page),
             rich_content=rich_content,
+            server_revision=(build_server_revision(server_page) if revision_verified else None),
         )
         page_entries.append({"id": page_id, **entry})
 
