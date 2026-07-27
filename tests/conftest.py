@@ -1,5 +1,6 @@
 """Shared test fixtures."""
 
+import os
 from pathlib import Path
 
 import pytest
@@ -23,6 +24,20 @@ def pytest_collection_modifyitems(
 ) -> None:
     """Skip every integration-marked test unless the suite is explicitly enabled."""
     if config.getoption("--run-docmost-integration"):
+        url = os.getenv("DOCMOST_INTEGRATION_URL")
+        api_key = os.getenv("DOCMOST_INTEGRATION_API_KEY")
+        email = os.getenv("DOCMOST_INTEGRATION_EMAIL")
+        password = os.getenv("DOCMOST_INTEGRATION_PASSWORD")
+        missing: list[str] = []
+        if not url:
+            missing.append("DOCMOST_INTEGRATION_URL")
+        if not api_key and not (email and password):
+            missing.append(
+                "DOCMOST_INTEGRATION_API_KEY or "
+                "DOCMOST_INTEGRATION_EMAIL + DOCMOST_INTEGRATION_PASSWORD"
+            )
+        if missing:
+            raise pytest.UsageError("--run-docmost-integration requires: " + ", ".join(missing))
         return
     skip = pytest.mark.skip(
         reason="pass --run-docmost-integration to run real Docmost integration tests"

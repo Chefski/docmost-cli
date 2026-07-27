@@ -33,9 +33,12 @@ def integration_settings(
     email = os.getenv("DOCMOST_INTEGRATION_EMAIL")
     password = os.getenv("DOCMOST_INTEGRATION_PASSWORD")
     if not url:
-        pytest.skip("DOCMOST_INTEGRATION_URL is not set")
+        raise pytest.UsageError("--run-docmost-integration requires DOCMOST_INTEGRATION_URL")
     if not api_key and not (email and password):
-        pytest.skip("integration API key or email/password credentials are not set")
+        raise pytest.UsageError(
+            "--run-docmost-integration requires DOCMOST_INTEGRATION_API_KEY or "
+            "DOCMOST_INTEGRATION_EMAIL + DOCMOST_INTEGRATION_PASSWORD"
+        )
 
     cache_dir = tmp_path_factory.mktemp("docmost-integration-cache")
     monkeypatch.setenv("XDG_CACHE_HOME", str(cache_dir))

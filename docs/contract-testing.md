@@ -30,7 +30,8 @@ remove any `known_drift` entries whose owning fix has landed.
 
 Real-instance tests always skip unless `--run-docmost-integration` is passed. Supplying
 credentials alone is not enough. Community authentication uses email and password; Enterprise
-may use an API key.
+may use an API key. Once the opt-in flag is present, a missing URL or incomplete core
+authentication configuration is a usage error rather than a skipped, false-green run.
 
 Tests that depend on an operation in `known_drift` also skip with the owning fix in the reason.
 Removing a resolved allowlist entry automatically activates its live coverage.
