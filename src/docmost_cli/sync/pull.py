@@ -585,6 +585,9 @@ def _recover_interrupted_publish(target: Path) -> None:
                 f"pull recovery cannot identify the previous snapshot for '{target}'; "
                 f"preserving all transaction data for inspection"
             )
+        if payload["phase"] != "published":
+            _sync_directory(target.parent)
+            _update_publish_journal(target, payload, "published")
     elif actual_target != target_identity:
         raise RuntimeError(
             f"pull recovery found an unexpected replacement at '{target}'; "

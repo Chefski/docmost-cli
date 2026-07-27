@@ -104,6 +104,37 @@ class TestBuildPageTree:
         ):
             build_page_tree(client, "space-1", max_depth=1)
 
+    def test_missing_declared_children_raises_instead_of_returning_partial_tree(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        api_key_settings,
+    ) -> None:
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_sidebar_pages",
+            lambda _client, _space_id: {
+                "data": {
+                    "items": [
+                        {
+                            "id": "root",
+                            "title": "Root",
+                            "hasChildren": True,
+                            "children": [],
+                        }
+                    ]
+                }
+            },
+        )
+
+        def missing_children(_client, _page_id, **_kwargs):
+            raise SystemExit(4)
+
+        monkeypatch.setattr("docmost_cli.api.pages.get_page_children", missing_children)
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(RuntimeError, match="complete child tree"),
+        ):
+            build_page_tree(client, "space-1")
+
 
 class TestGetPageInfo:
     def test_returns_info(self, httpx_mock, api_key_settings) -> None:

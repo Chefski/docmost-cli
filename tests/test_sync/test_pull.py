@@ -673,6 +673,39 @@ class TestPullAtomicPublication:
         assert not (target / sanitize_filename("New Page", "same-page")).exists()
         assert not list(tmp_path.glob(".test.pull-*"))
 
+    def test_incomplete_child_tree_preserves_existing_target(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        existing = target / "existing.txt"
+        existing.write_text("keep", encoding="utf-8")
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "root",
+                    "title": "Root",
+                    "icon": "",
+                    "hasChildren": True,
+                    "children": [],
+                }
+            ],
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/sidebar-pages",
+            status_code=404,
+        )
+
+        with _make_client() as client, pytest.raises(RuntimeError, match="complete child tree"):
+            pull_space(client, "test", target, force=True)
+
+        assert existing.read_text(encoding="utf-8") == "keep"
+        assert not list(tmp_path.glob(".test.pull-*"))
+
     def test_change_during_atomic_exchange_is_rolled_back(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -787,7 +820,24 @@ class TestPullAtomicPublication:
         assert (target / "new.txt").read_text(encoding="utf-8") == "new"
         assert len(backups) == 1
         assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "old"
-        assert _publish_journal_path(target).exists()
+        journal_path = _publish_journal_path(target)
+        assert journal_path.exists()
+
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+        _ACTIVE_PUBLISH_TOKENS.discard(payload["owner_token"])
+
+        def fail_recovery_sync(_path: Path) -> None:
+            raise OSError("recovery durability unavailable")
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._sync_directory",
+            fail_recovery_sync,
+        )
+        with pytest.raises(OSError, match="recovery durability unavailable"):
+            _recover_interrupted_publish(target)
+
+        assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "old"
+        assert journal_path.exists()
 
 
 class TestPullManagedCleanup:

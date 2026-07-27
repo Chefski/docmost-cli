@@ -683,8 +683,9 @@ def _fill_children(
         except SystemExit as exc:
             if exc.code not in (4,):
                 raise
-            page["children"] = []
-            return
+            raise RuntimeError(
+                f"could not fetch the complete child tree below page '{page_id}'"
+            ) from exc
 
     for child in children:
         _fill_children(
