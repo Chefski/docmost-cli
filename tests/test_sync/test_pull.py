@@ -1855,6 +1855,23 @@ class TestPullPathSafety:
         with _make_client() as client, pytest.raises(SystemExit):
             pull_space(client, "test", target)
 
+    def test_rejects_target_below_symlinked_parent(self, tmp_path: Path) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        linked_parent = tmp_path / "linked"
+        try:
+            linked_parent.symlink_to(outside, target_is_directory=True)
+        except OSError:
+            pytest.skip("directory symlinks are unavailable")
+        target = linked_parent / "sync"
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            pull_space(client, "test", target)
+
+        assert not target.exists()
+        assert not list(outside.iterdir())
+        assert not list(tmp_path.glob(".sync.pull-*"))
+
     def test_rejects_managed_cleanup_through_symlinked_parent(
         self,
         httpx_mock,

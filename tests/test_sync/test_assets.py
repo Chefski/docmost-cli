@@ -54,6 +54,7 @@ def test_asset_relative_path_normalizes_windows_unsafe_filenames() -> None:
         == f"files/{ATTACHMENT_ID}/CON- quarterly-.txt"
     )
     assert asset_relative_path(ATTACHMENT_ID, "CON.txt") == f"files/{ATTACHMENT_ID}/_CON.txt"
+    assert asset_relative_path(ATTACHMENT_ID, "COM¹.txt") == f"files/{ATTACHMENT_ID}/_COM¹.txt"
 
 
 def test_discover_local_assets_decodes_url_paths(tmp_path: Path) -> None:

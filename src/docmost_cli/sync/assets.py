@@ -46,6 +46,8 @@ _WINDOWS_RESERVED_NAMES = {
     "NUL",
     *(f"COM{index}" for index in range(1, 10)),
     *(f"LPT{index}" for index in range(1, 10)),
+    *(f"COM{index}" for index in ("¹", "²", "³")),
+    *(f"LPT{index}" for index in ("¹", "²", "³")),
 }
 
 

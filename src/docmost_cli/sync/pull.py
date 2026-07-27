@@ -1009,8 +1009,8 @@ def pull_space(
     target_path = Path(os.path.abspath(dir_path))
     if target_path == target_path.parent:
         print_error("The sync target must not be a filesystem root.")
-    if target_path.is_symlink():
-        print_error(f"Target directory '{dir_path}' must not be a symbolic link.")
+    if any(path.is_symlink() for path in (target_path, *target_path.parents)):
+        print_error(f"Target directory '{dir_path}' must not traverse a symbolic link.")
     current_directory = Path.cwd().resolve()
     resolved_target = target_path.resolve()
     if current_directory == resolved_target or resolved_target in current_directory.parents:
