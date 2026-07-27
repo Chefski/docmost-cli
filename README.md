@@ -128,6 +128,43 @@ their hashes and owning pages in `.docmost-manifest.json`. `sync push` uploads n
 replaces changed assets in place, while writing the stable attachment ID back into Docmost page
 content. Relative image/file links to existing local files are treated as page assets.
 
+Pulls are staged and validated before the live directory is replaced. If any page or attachment
+fails to download, the previous sync remains unchanged. A forced pull removes stale pages and
+assets recorded by the old manifest, including files renamed remotely, while preserving unrelated
+local files. The CLI aborts if the target changes while downloads are in progress. Publication
+uses an atomic directory exchange where the platform supports it and a durable recovery journal
+for portable fallback.
+
+Every pull also records a canonical fingerprint of each page's raw server state. Before updating,
+moving, or deleting a page, `sync push` verifies that fingerprint against `/pages/info` and aborts
+the entire push if the page changed remotely. Preserve local edits, pull the space into a separate
+directory with `sync pull <space> --dir <new-directory>`, and merge the two copies; do not run a
+force pull over uncommitted local edits. `sync push --force` deliberately bypasses a stale
+baseline; forced conflicting pages keep their previous baseline so a later normal push still
+requires reconciliation. Manifests created before this protection remain readable, but mutating
+their pages requires reconciliation or explicit `--force`.
+
+Tracked attachments retain their pulled byte fingerprint and server update revision. Before
+replacing locally changed attachment bytes in place, push downloads and verifies the current
+remote bytes against that fingerprint.
+
+This safeguard is a preflight check, not atomic compare-and-swap. Current Docmost page mutation
+endpoints do not accept a conditional revision token, so an edit racing after the check can still
+be overwritten.
+
+Sync uses Docmost's server-side Markdown conversion as the canonical local representation. Every
+pull pairs that Markdown with the same page revision's exact ProseMirror JSON, stores the raw source
+under `.docmost/raw-pages/`, and records editor features that Markdown cannot preserve. Concurrent
+page changes during pull are retried. If a local content or attachment change would replace a page
+containing protected features (for example mentions, comments, columns, transclusions, embeds,
+alignment, colors, or merged cells), `sync push` stops before making any server changes. Guarded
+pages are fetched again immediately before replacement so rich content added in Docmost after the
+last pull is also protected.
+Title, icon, and parent-only changes remain safe. Manifests from older CLI versions remain usable;
+run a fresh pull to enable the rich-content guard for those pages. If a successful server response
+contains no canonical Markdown, pull still produces readable compatibility output but protects
+that page from content pushes because the compatibility converter is not lossless.
+
 ## Configuration
 
 ### Config file location

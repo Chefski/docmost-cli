@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from docmost_cli.api.client import DocmostClient
+    from docmost_cli.sync.rich_content import RichContentConflict
 
 __all__ = ["PushResult", "push_space"]
 
@@ -35,6 +36,7 @@ def push_space(
     *,
     dry_run: bool = False,
     delete: bool = False,
+    force: bool = False,
     diff: SyncDiff | None = None,
 ) -> PushResult:
     """Push local changes to Docmost server.
@@ -45,6 +47,7 @@ def push_space(
         dir_path: Directory containing synced files.
         dry_run: If True, show plan without executing changes.
         delete: If True, delete server pages not found locally.
+        force: Apply local changes despite stale remote revision baselines.
         diff: Pre-computed diff (avoids recomputing if caller already has it).
 
     Returns:
@@ -61,13 +64,23 @@ def push_space(
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.output.formatter import print_error
     from docmost_cli.sync.assets import prepare_markdown_assets
+    from docmost_cli.sync.conflicts import (
+        fetch_server_page,
+        format_reconciliation_guidance,
+        verify_remote_revisions,
+    )
     from docmost_cli.sync.diff import compute_diff
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         build_page_entry,
+        build_server_revision,
         compute_content_hash,
         load_manifest,
         save_manifest,
+    )
+    from docmost_cli.sync.rich_content import (
+        find_rich_content_conflicts,
+        markdown_rich_content_state,
     )
 
     space_id = resolve_space_id(client, space_slug)
@@ -87,14 +100,118 @@ def push_space(
     # Display summary
     _print_summary(diff)
 
+    rich_content_conflicts = find_rich_content_conflicts(diff)
     if dry_run:
         _print_dry_run(diff)
+        if rich_content_conflicts:
+            _print_rich_content_conflicts(rich_content_conflicts)
+            _err.print(
+                "[yellow]A real push would be refused because the protected content above "
+                "cannot round-trip safely through Markdown.[/yellow]"
+            )
         return result
+
+    if rich_content_conflicts:
+        _print_rich_content_conflicts(rich_content_conflicts)
+        print_error(
+            "Refusing to replace content that cannot round-trip safely through Markdown. "
+            "Edit those pages in Docmost, or revert their local content/attachment changes. "
+            "Title, icon, and parent-only changes remain safe."
+        )
+
+    # Check every existing page before making any mutation. This keeps a
+    # conflict from being discovered after an unrelated new page was created.
+    existing_changes = [*diff.modified, *diff.moved]
+    if delete:
+        existing_changes.extend(diff.deleted)
+    preflight = verify_remote_revisions(
+        client,
+        existing_changes,
+        space_slug=space_slug,
+        dir_path=dir_path,
+        manifest=manifest,
+        force=force,
+    )
+
+    # A missing page cannot be overwritten. A missing page that was already
+    # deleted locally is treated as an idempotent deletion when --force is set.
+    deleted_ids = {change.page_id for change in diff.deleted} if delete else set()
+    unforceable_missing = preflight.missing_page_ids - deleted_ids
+    if unforceable_missing:
+        missing = ", ".join(sorted(unforceable_missing))
+        print_error(
+            "Cannot force updates for pages that no longer exist on the server "
+            f"({missing}). No changes were pushed.\n"
+            + format_reconciliation_guidance(
+                space_slug=space_slug,
+                dir_path=dir_path,
+                local_files_unchanged=True,
+            )
+        )
+
+    if preflight.missing_attachment_ids:
+        missing = ", ".join(sorted(preflight.missing_attachment_ids))
+        print_error(
+            "Cannot replace attachments that no longer exist on the server "
+            f"({missing}). No changes were pushed.\n"
+            + format_reconciliation_guidance(
+                space_slug=space_slug,
+                dir_path=dir_path,
+                local_files_unchanged=True,
+            )
+        )
+
+    if preflight.reassigned_attachment_ids:
+        reassigned = ", ".join(sorted(preflight.reassigned_attachment_ids))
+        print_error(
+            "Cannot replace attachments that now belong to another page "
+            f"({reassigned}). No changes were pushed.\n"
+            + format_reconciliation_guidance(
+                space_slug=space_slug,
+                dir_path=dir_path,
+                local_files_unchanged=True,
+            )
+        )
+
+    # Recheck every guarded replacement before Phase A so a later conflict
+    # cannot leave earlier creates or updates partially applied.
+    for change in diff.modified:
+        if change.changes & {ChangeType.CONTENT_CHANGED, ChangeType.ATTACHMENT_CHANGED}:
+            _ensure_current_rich_content_is_safe(client, change)
 
     # --- Execute changes ---
 
     id_remap: dict[str, str] = {}  # old_id -> new_id
     manifest.setdefault("assets", {})
+    forced_conflict_ids = preflight.conflict_page_ids if force else set()
+
+    def refresh_revision(page_id: str) -> None:
+        """Persist the canonical state immediately after a page's last mutation."""
+        page = fetch_server_page(
+            client,
+            page_id,
+            failure_suffix=(
+                "The page may have been updated, but the manifest was not saved.\n"
+                + format_reconciliation_guidance(
+                    space_slug=space_slug,
+                    dir_path=dir_path,
+                    local_files_unchanged=False,
+                )
+            ),
+        )
+        if page is None:
+            print_error(
+                f"Page {page_id} disappeared after it was updated. "
+                "The manifest was not saved.\n"
+                + format_reconciliation_guidance(
+                    space_slug=space_slug,
+                    dir_path=dir_path,
+                    local_files_unchanged=False,
+                )
+            )
+        entry = manifest["pages"].get(page_id)
+        if entry is not None:
+            entry["server_revision"] = build_server_revision(page)
 
     # Phase A: Create new pages (topological order)
     existing_ids = set(manifest.get("pages", {}).keys())
@@ -149,7 +266,9 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            rich_content=markdown_rich_content_state(),
         )
+        refresh_revision(new_id)
         existing_ids.add(new_id)
         result.created += 1
 
@@ -169,6 +288,9 @@ def push_space(
 
         # Content update
         if has_content_change:
+            # Validate before asset preparation because changed assets are
+            # uploaded in place and are themselves a server mutation.
+            _ensure_current_rich_content_is_safe(client, change)
             try:
                 server_body, asset_entries, attachment_ids = prepare_markdown_assets(
                     client,
@@ -179,6 +301,9 @@ def push_space(
                 )
             except FileNotFoundError as exc:
                 print_error(f"Attachment file not found: {exc.filename or exc}")
+            # Revalidate after any uploads so a concurrent editor cannot add a
+            # protected feature while local assets are being prepared.
+            _ensure_current_rich_content_is_safe(client, change)
             update_page_content(client, page_id=page_id, content=server_body)
             manifest["assets"].update(asset_entries)
             _err.print(f"  Updated: {title}")
@@ -202,6 +327,10 @@ def push_space(
             manifest_parent_id = (change.manifest_entry or {}).get("parent_id") or None
 
         content_hash = compute_content_hash(body)
+        previous_rich_content = (change.manifest_entry or {}).get("rich_content")
+        rich_content = (
+            markdown_rich_content_state() if has_content_change else previous_rich_content
+        )
         manifest["pages"][page_id] = build_page_entry(
             title=title,
             filename=change.filename,
@@ -209,7 +338,11 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            server_revision=(change.manifest_entry or {}).get("server_revision"),
+            rich_content=rich_content,
         )
+        if ChangeType.MOVED not in change.changes and page_id not in forced_conflict_ids:
+            refresh_revision(page_id)
         result.updated += 1
 
     # Phase B2: Move pages after any content/metadata updates have succeeded.
@@ -236,6 +369,8 @@ def push_space(
         # Update manifest
         if page_id in manifest["pages"]:
             manifest["pages"][page_id]["parent_id"] = parent_id
+        if page_id not in forced_conflict_ids:
+            refresh_revision(page_id)
         result.moved += 1
 
     # Phase C: Deletions
@@ -244,7 +379,8 @@ def push_space(
             for change in diff.deleted:
                 entry = change.manifest_entry or {}
                 _err.print(f"  Deleting: {entry.get('title', change.page_id)}")
-                delete_page(client, change.page_id)
+                if change.page_id not in preflight.missing_page_ids:
+                    delete_page(client, change.page_id)
                 manifest["pages"].pop(change.page_id, None)
                 result.deleted += 1
         else:
@@ -357,6 +493,34 @@ def _print_summary(diff: SyncDiff) -> None:
     _err.print("Push plan:")
     for line in lines:
         _err.print(line)
+
+
+def _print_rich_content_conflicts(conflicts: list[RichContentConflict]) -> None:
+    """Print page-level diagnostics for blocked lossy replacements."""
+    _err.print("[red]Rich-content safety check failed:[/red]")
+    for conflict in conflicts:
+        features = ", ".join(conflict.features)
+        _err.print(f"  {conflict.title} ({conflict.filename}): {features}")
+        if conflict.snapshot_path:
+            _err.print(f"    Raw source snapshot: {conflict.snapshot_path}")
+
+
+def _ensure_current_rich_content_is_safe(
+    client: DocmostClient,
+    change: PageChange,
+) -> None:
+    """Refuse a guarded replacement when the current server page is lossy."""
+    from docmost_cli.output.formatter import print_error
+    from docmost_cli.sync.rich_content import find_current_rich_content_conflict
+
+    current_conflict = find_current_rich_content_conflict(client, change)
+    if current_conflict is None:
+        return
+    _print_rich_content_conflicts([current_conflict])
+    print_error(
+        "Refusing to replace rich content added in Docmost since the last pull. "
+        "Pull again before editing this page locally."
+    )
 
 
 def _print_dry_run(diff: SyncDiff) -> None:

@@ -16,6 +16,7 @@ docmost\-cli\-sync \- synchronize Docmost pages with local Markdown files
 .IR path ]
 .RB [ \-\-dry\-run ]
 .RB [ \-\-delete ]
+.RB [ \-\-force ]
 .br
 .B docmost\-cli sync status
 .I space\-slug
@@ -29,8 +30,8 @@ Each page is stored as a single Markdown file with YAML frontmatter
 containing page metadata.
 A
 .I .docmost\-manifest.json
-file tracks sync state using SHA\-256 content hashes for change detection
-(timestamps are not used).
+file tracks local Markdown hashes and canonical SHA\-256 fingerprints of raw
+server page state for change detection.
 .SS Local directory format
 After
 .BR "sync pull" ,
@@ -42,6 +43,7 @@ engineering/
   Getting Started\-\-019a2a69.md
   API Reference\-\-019b3c8f.md
   files/019c4d9a\-xxxx\-xxxx\-xxxx\-xxxxxxxxxxxx/diagram.png
+  .docmost/raw\-pages/019a2a69\-xxxx\-xxxx\-xxxx\-xxxxxxxxxxxx.json
   .docmost\-manifest.json
 .EE
 .RE
@@ -70,6 +72,26 @@ Referenced page attachments are downloaded beneath
 and tracked by owner plus SHA\-256 hash in the manifest.
 Push uploads new local file/image links and replaces changed attachment bytes
 in place, preserving stable attachment and page IDs on both editions.
+.SS Rich content safety
+Pull uses Docmost's server\-side Markdown conversion and stores the exact
+same\-revision ProseMirror JSON beneath
+.IR .docmost/raw\-pages/ .
+Concurrent page changes detected during pull are retried.
+The manifest records editor features that Markdown cannot preserve, including
+mentions, comments, columns, transclusions, embeds, alignment, colors, and
+merged table cells.
+.PP
+Before any server mutation, push checks every content and attachment replacement.
+If the source page contains a protected feature, the complete push stops with
+page\-level diagnostics and the raw snapshot path.
+Title, icon, and parent\-only changes remain allowed because they do not replace
+page content.
+.PP
+Manifests created by older CLI versions remain usable.
+Run a fresh pull to add raw snapshots and enable the rich\-content guard for
+their existing pages.
+If a successful server response contains no canonical Markdown, pull writes
+compatibility output for reading but protects that page from content replacement.
 .SH SUBCOMMANDS
 .SS pull
 Download all pages from a space to local Markdown files.
@@ -82,6 +104,14 @@ Creates a directory with one
 file per page (with YAML frontmatter) and a
 .I .docmost\-manifest.json
 tracking sync state.
+.PP
+The complete pull is downloaded and validated in a sibling staging directory
+before publication. If a page, attachment, validation, or filesystem operation
+fails, the previous sync remains in place.
+.PP
+If the target changes while downloads are in progress, pull aborts without
+overwriting the intervening edits. Publication uses an atomic directory exchange
+where supported and a durable recovery journal on portable fallback paths.
 .TP
 .BI \-\-dir " path"
 Target directory.
@@ -90,9 +120,10 @@ Default:
 in the current working directory.
 .TP
 .B \-\-force
-Overwrite local changes without warning.
-Without this flag, locally modified files are preserved and a warning
-is printed.
+Replace the files tracked by the previous manifest without prompting.
+Stale tracked pages and attachments, including remotely renamed pages,
+are removed. Files not tracked by the manifest are preserved.
+Without this flag, a directory with an existing sync manifest is rejected.
 .SS push
 Upload local changes to the Docmost server.
 .PP
@@ -102,6 +133,10 @@ identifies the space to push changes to.
 Requires a prior
 .B sync pull
 to establish the manifest.
+Content replacement is refused when the pull\-time guard shows that Markdown
+would discard rich editor features.
+Guarded pages are fetched again immediately before replacement so rich content
+added in Docmost after the last pull is also protected.
 Prompts for confirmation before applying changes unless
 .B \-\-yes
 or
@@ -121,6 +156,31 @@ Show what changes would be applied without executing them.
 Delete server pages that are not found locally.
 Without this flag, pages deleted from the local directory are
 left untouched on the server.
+.TP
+.B \-\-force
+Apply local changes even when the server page changed since the last pull.
+Without this flag, push checks every page to be updated, moved, or deleted
+against its raw
+.B /pages/info
+revision before making any mutation and aborts the entire push on conflict.
+Locally changed tracked attachments also compare the current remote bytes with
+their stored pulled fingerprint before replacing attachment bytes in place.
+Forced conflicting pages keep their previous baseline; reconcile before the
+next normal push.
+.PP
+The revision check is a best\-effort preflight, not atomic compare\-and\-swap.
+Current Docmost page mutation endpoints do not accept a conditional revision
+token, so a remote edit racing after the check can still be overwritten.
+.PP
+Manifests created before remote revision tracking remain readable, but their
+existing pages require reconciliation or an explicit
+.B sync push \-\-force
+before mutation.
+.PP
+To reconcile safely, preserve local edits and pull the remote space into a
+separate directory with
+.BR "sync pull " space\-slug " \-\-dir " new\-directory .
+Merge the two copies instead of force\-pulling over active local files.
 .SS status
 Show changes between local files and the last\-pulled state.
 .PP
@@ -174,6 +234,14 @@ Push changes non\-interactively, deleting removed pages:
 .RS 4
 .EX
 $ docmost\-cli \-y sync push engineering \-\-delete
+.EE
+.RE
+.PP
+Deliberately apply local changes after reviewing a remote conflict:
+.PP
+.RS 4
+.EX
+$ docmost\-cli sync push engineering \-\-force
 .EE
 .RE
 .PP

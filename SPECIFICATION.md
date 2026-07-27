@@ -278,20 +278,47 @@ Enables documentation-as-code workflows with git version control.
 
 ```
 docmost-cli sync pull <space>  [--dir PATH] [--force]     # Download pages → local Markdown files
-docmost-cli sync push <space>  [--dir PATH] [--dry-run] [--delete] [--yes]  # Upload local changes
+docmost-cli sync push <space>  [--dir PATH] [--dry-run] [--delete] [--force] [--yes]  # Upload local changes
 docmost-cli sync status <space> [--dir PATH]               # Show changes since last pull
 ```
 
 **Local directory format:**
 - Flat directory with `.docmost-manifest.json` tracking sync state
+- Manifest v3 stores a canonical SHA-256 fingerprint of raw `/pages/info`
+  content and metadata for every pulled page
+- Push checks all remote revisions before any update, move, or deletion;
+  stale and legacy baselines abort with page-level details
+- Locally changed tracked attachments compare the current remote bytes with
+  their stored pulled fingerprint before any in-place byte replacement
+- `sync push --force` explicitly applies local changes despite conflicts;
+  forced conflicting pages are not silently rebaselined
+- Conflict recovery preserves local edits: pull into a separate `--dir`, then
+  merge the local and remote copies instead of force-pulling over active files
+- Revision checks are a best-effort preflight, not atomic compare-and-swap,
+  because current Docmost mutations expose no conditional revision token
 - Each page is `{title}--{id_prefix}.md` with YAML frontmatter (`id`, `title`, `parent_id`, `icon`)
 - Referenced assets are stored as `files/{attachment_id}/{filename}` and tracked by hash/owner
+- Raw pull-time ProseMirror snapshots are stored under `.docmost/raw-pages/` for loss prevention
 - Change detection via SHA-256 content hash (not timestamps)
+- Pulls stage and validate every managed file before replacing the live directory
+- Failed pulls leave the previous sync untouched
+- Forced pulls remove stale manifest-owned pages/assets but preserve unrelated local files
+- Pulls abort when the target changes during staging instead of overwriting intervening edits
+- Publication uses atomic directory exchange where available and journaled recovery otherwise
 
 **Stable content and asset updates:**
 - Both editions use `POST /pages/update` with `operation: replace`, preserving page IDs
 - New local file/image links are uploaded to the owning page before its content is updated
 - Changed attachment bytes use `/files/upload` with the existing attachment ID, preserving URLs
+- Pull requests `format: markdown` from `/pages/info`, using Docmost's own serializer
+- Raw and Markdown responses must have the same `updatedAt`; concurrent edits are retried
+- Pull analyzes the raw JSON and records features that cannot round-trip through Markdown
+- Push preflights all replacements and aborts before mutation when protected features are present
+- Push re-fetches guarded pages immediately before replacement and blocks newly added rich features
+- Title, icon, and parent-only updates do not replace content and therefore remain allowed
+- Legacy manifests without guard metadata remain readable; a fresh pull enables protection
+- A successful response without canonical Markdown uses readable local fallback output that is
+  always protected from content replacement; transient canonical reads are retried safely
 
 ---
 
@@ -501,7 +528,9 @@ be replayed.
 
 ### 6.1 ProseMirror → Markdown
 
-This is the critical path for `page get`. The converter must handle all Docmost node types:
+Docmost's `/pages/info` endpoint with `format: markdown` is the canonical conversion path for
+sync. The local converter remains a compatibility fallback for older servers and handles the
+common Markdown-safe subset:
 
 | ProseMirror Node | Markdown Output |
 |---|---|
@@ -515,20 +544,24 @@ This is the critical path for `page get`. The converter must handle all Docmost 
 | `horizontalRule` | `---` |
 | `table` / `tableRow` / `tableCell` / `tableHeader` | GFM table syntax |
 | `image` | `![alt](src)` |
-| `hardBreak` | `\n` or `<br>` |
-| `callout` | `> **{type}**: text` (custom convention) |
-| `details` / `detailsSummary` / `detailsContent` | `<details>` HTML |
+| `hardBreak` | Protected: the current server converter normalizes it to a space |
+| `callout` | `:::type` fenced block |
+| `details` / `detailsSummary` / `detailsContent` | Protected |
 | `mathInline` / `mathBlock` | `$...$` / `$$...$$` |
-| `embed` | Link to embedded URL |
-| `drawio` / `excalidraw` | `[Diagram: type]` placeholder |
+| `embed`, `drawio`, `excalidraw`, media, columns, subpages, status, mentions, transclusions | Protected |
 | **Marks** | |
 | `bold` | `**text**` |
 | `italic` | `*text*` |
 | `code` | `` `text` `` |
 | `strike` | `~~text~~` |
 | `link` | `[text](href)` |
-| `highlight` | `==text==` or passthrough |
-| `underline` | `<u>text</u>` |
+| `highlight`, `underline`, comments, text color, subscript, superscript | Protected |
+
+"Protected" means Markdown may still be written for local reading, but a content or attachment
+replacement is rejected because reconstructing the page from that Markdown would discard editor
+semantics or formatting. Pull stores the exact source JSON under `.docmost/raw-pages/` and its
+hash plus detected feature names in the manifest. Generated paragraph and heading IDs are not
+treated as author-visible content and may be regenerated by Docmost.
 
 ### 6.2 Markdown → ProseMirror
 
@@ -734,7 +767,7 @@ def print_error(message: str, exit_code: int = 1) -> NoReturn:
 ### Phase 5: Sync
 - [x] `sync/manifest.py` — manifest load/save, content hashing, filename sanitization
 - [x] `sync/frontmatter.py` — YAML frontmatter parse/serialize (no PyYAML dependency)
-- [x] `sync/pull.py` — pull algorithm (tree → flatten → fetch content → write files)
+- [x] `sync/pull.py` — staged pull algorithm with validation, rollback, and stale managed-file cleanup
 - [x] `sync/push.py` — push algorithm (diff → create/update/move, edition-aware)
 - [x] `sync/diff.py` — change detection (new, modified, moved, deleted)
 - [x] `cli/sync_cmd.py` — `sync pull`, `sync push`, `sync status` commands

@@ -18,12 +18,17 @@ def sync_pull_cmd(
     dir_path: Path = typer.Option(
         None, "--dir", help="Target directory (default: ./<space-slug>/)"
     ),
-    force: bool = typer.Option(False, "--force", help="Overwrite local changes without warning"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Replace previously synced files while preserving unrelated files",
+    ),
 ) -> None:
     """Download all pages from a space to local Markdown files.
 
     Creates a directory with one .md file per page (with YAML frontmatter)
-    and a .docmost-manifest.json tracking sync state.
+    and a .docmost-manifest.json tracking sync state. Raw ProseMirror
+    snapshots protect rich editor features that Markdown cannot preserve.
 
     See also: sync push (upload changes), sync status (show changes).
     """
@@ -91,11 +96,17 @@ def sync_push_cmd(
     ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show changes without executing"),
     delete: bool = typer.Option(False, "--delete", help="Delete server pages not found locally"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Apply local changes even when the server changed since the last pull",
+    ),
 ) -> None:
     """Upload local changes to Docmost server.
 
     Requires a prior 'sync pull' to establish the manifest.
     Use --dry-run to preview changes before applying.
+    Content replacements that would discard protected rich content are refused.
 
     See also: sync status (preview changes), sync pull (download from server).
     """
@@ -117,4 +128,12 @@ def sync_push_cmd(
         if pre_diff.has_changes:
             typer.confirm("Push changes?", abort=True)
 
-    push_space(client, space_slug, target, dry_run=dry_run, delete=delete, diff=pre_diff)
+    push_space(
+        client,
+        space_slug,
+        target,
+        dry_run=dry_run,
+        delete=delete,
+        force=force,
+        diff=pre_diff,
+    )

@@ -8,6 +8,7 @@ from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
 from docmost_cli.sync.assets import (
     asset_markdown_path,
+    asset_relative_path,
     collect_attachment_ids,
     compute_file_hash,
     discover_local_assets,
@@ -47,6 +48,15 @@ def test_collect_attachment_ids_deduplicates_nested_nodes() -> None:
     assert collect_attachment_ids(document) == [ATTACHMENT_ID, "second-id", "legacy-id"]
 
 
+def test_asset_relative_path_normalizes_windows_unsafe_filenames() -> None:
+    assert (
+        asset_relative_path(ATTACHMENT_ID, "reports/CON: quarterly?.txt. ")
+        == f"files/{ATTACHMENT_ID}/CON- quarterly-.txt"
+    )
+    assert asset_relative_path(ATTACHMENT_ID, "CON.txt") == f"files/{ATTACHMENT_ID}/_CON.txt"
+    assert asset_relative_path(ATTACHMENT_ID, "COM¹.txt") == f"files/{ATTACHMENT_ID}/_COM¹.txt"
+
+
 def test_discover_local_assets_decodes_url_paths(tmp_path: Path) -> None:
     asset = tmp_path / "files" / ATTACHMENT_ID / "Launch plan.png"
     asset.parent.mkdir(parents=True)
@@ -58,6 +68,55 @@ def test_discover_local_assets_decodes_url_paths(tmp_path: Path) -> None:
     assert len(references) == 1
     assert references[0].absolute_path == asset
     assert references[0].is_image is True
+
+
+def test_discover_local_assets_handles_escaped_and_nested_labels(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / ATTACHMENT_ID / "Launch plan.png"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"image")
+    markdown_path = asset_markdown_path(asset.relative_to(tmp_path).as_posix())
+
+    references = discover_local_assets(
+        rf"![Before \] [nested]]({markdown_path})",
+        tmp_path,
+    )
+
+    assert len(references) == 1
+    assert references[0].absolute_path == asset
+    assert references[0].label == r"Before \] [nested]"
+
+
+def test_discover_local_assets_decodes_escaped_destination(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / "report(final).pdf"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"pdf")
+
+    references = discover_local_assets(r"[Report](files/report\(final\).pdf)", tmp_path)
+
+    assert references[0].absolute_path == asset
+
+
+def test_discover_local_assets_preserves_escaped_query_characters(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / "report?#.pdf"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"pdf")
+
+    references = discover_local_assets(r"[Report](files/report\?\#.pdf)", tmp_path)
+
+    assert references[0].absolute_path == asset
+
+
+def test_discover_local_assets_ignores_code_examples(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / "report.pdf"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"pdf")
+    markdown = (
+        "`[inline](files/report.pdf)`\n"
+        "```\n[fenced](files/report.pdf)\n```\n"
+        "    [indented](files/report.pdf)\n"
+    )
+
+    assert discover_local_assets(markdown, tmp_path) == []
 
 
 def test_prepare_new_image_uploads_and_embeds_stable_id(

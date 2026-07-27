@@ -16,6 +16,7 @@ from docmost_cli.sync.manifest import (
     MANIFEST_VERSION,
     build_manifest,
     build_page_entry,
+    build_server_revision,
     compute_content_hash,
     load_manifest,
     sanitize_filename,
@@ -40,6 +41,10 @@ class TestSanitizeFilename:
         result = sanitize_filename("AC/DC: The Best?", FAKE_ID)
         # / → -, : → -, ? → -  then collapse, spaces preserved
         assert result == "AC-DC- The Best--019a2a69.md"
+
+    def test_control_characters_are_replaced(self) -> None:
+        result = sanitize_filename("Quarterly\x00Plan\nDraft", FAKE_ID)
+        assert result == "Quarterly-Plan-Draft--019a2a69.md"
 
     def test_very_long_title_truncated(self) -> None:
         long_title = "A" * 120
@@ -109,6 +114,79 @@ class TestComputeContentHash:
 
 
 # ---------------------------------------------------------------------------
+# build_server_revision
+# ---------------------------------------------------------------------------
+
+
+class TestBuildServerRevision:
+    """Tests for canonical server-state fingerprints."""
+
+    def test_is_stable_across_json_key_order(self) -> None:
+        first = {
+            "id": "page-1",
+            "title": "Page",
+            "icon": None,
+            "parentPageId": None,
+            "spaceId": "space-1",
+            "content": {"type": "doc", "content": [{"type": "paragraph"}]},
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+        }
+        second = {
+            "content": {"content": [{"type": "paragraph"}], "type": "doc"},
+            "spaceId": "space-1",
+            "parentPageId": None,
+            "icon": "",
+            "title": "Page",
+            "id": "page-1",
+            "updatedAt": "2026-01-02T00:00:00.000Z",
+        }
+
+        assert (
+            build_server_revision(first)["fingerprint"]
+            == build_server_revision(second)["fingerprint"]
+        )
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("title", "Changed"),
+            ("icon", "📄"),
+            ("parentPageId", "parent-2"),
+            ("spaceId", "space-2"),
+            ("deletedAt", "2026-01-03T00:00:00.000Z"),
+            ("content", {"type": "doc", "content": [{"type": "heading"}]}),
+        ],
+    )
+    def test_changes_when_synced_server_state_changes(self, field: str, value: object) -> None:
+        page = {
+            "id": "page-1",
+            "title": "Page",
+            "icon": "",
+            "parentPageId": None,
+            "spaceId": "space-1",
+            "content": {"type": "doc", "content": []},
+            "deletedAt": None,
+        }
+        changed = {**page, field: value}
+
+        assert (
+            build_server_revision(page)["fingerprint"]
+            != build_server_revision(changed)["fingerprint"]
+        )
+
+    def test_retains_updated_at_for_diagnostics(self) -> None:
+        revision = build_server_revision(
+            {
+                "id": "page-1",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+            }
+        )
+
+        assert revision["version"] == 1
+        assert revision["updated_at"] == "2026-01-01T00:00:00.000Z"
+
+
+# ---------------------------------------------------------------------------
 # load_manifest / save_manifest roundtrip
 # ---------------------------------------------------------------------------
 
@@ -170,6 +248,13 @@ class TestLoadSaveManifest:
         assert result is not None
         assert result["version"] == MANIFEST_VERSION
 
+    def test_load_older_manifest_without_revision_succeeds(self, tmp_path: Path) -> None:
+        manifest = {"version": 2, "pages": {"page-1": {"title": "Old manifest"}}}
+        manifest_path = tmp_path / MANIFEST_FILENAME
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        assert load_manifest(tmp_path) == manifest
+
 
 # ---------------------------------------------------------------------------
 # build_manifest
@@ -188,6 +273,11 @@ class TestBuildManifest:
                 "parent_id": None,
                 "icon": "📄",
                 "content_hash": "sha256:aaa",
+                "server_revision": {
+                    "version": 1,
+                    "fingerprint": "sha256:server-a",
+                    "updated_at": "2026-01-01T00:00:00.000Z",
+                },
             },
             {
                 "id": "page-2",
@@ -207,6 +297,7 @@ class TestBuildManifest:
         assert "page-1" in manifest["pages"]
         assert "page-2" in manifest["pages"]
         assert manifest["pages"]["page-1"]["title"] == "First Page"
+        assert manifest["pages"]["page-1"]["server_revision"]["fingerprint"] == ("sha256:server-a")
         assert manifest["pages"]["page-2"]["parent_id"] == "page-1"
 
     def test_synced_at_is_iso_format(self) -> None:
@@ -277,3 +368,40 @@ class TestBuildPageEntry:
             content_hash="sha256:abc",
         )
         assert entry["icon"] == ""
+
+    def test_includes_server_revision(self) -> None:
+        revision = {
+            "version": 1,
+            "fingerprint": "sha256:server",
+            "updated_at": "2026-01-01T00:00:00.000Z",
+        }
+        entry = build_page_entry(
+            title="Page",
+            filename="Page--abcd1234.md",
+            parent_id=None,
+            icon="",
+            content_hash="sha256:content",
+            server_revision=revision,
+        )
+
+        assert entry["server_revision"] == revision
+
+    def test_positional_rich_content_argument_remains_compatible(self) -> None:
+        rich_content = {
+            "guard_version": 1,
+            "source": "prosemirror",
+            "unsafe_features": [],
+        }
+
+        entry = build_page_entry(
+            "Page",
+            "Page--abcd1234.md",
+            None,
+            "",
+            "sha256:content",
+            [],
+            rich_content,
+        )
+
+        assert entry["rich_content"] == rich_content
+        assert "server_revision" not in entry

@@ -1,0 +1,140 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "paragraph",
+      "attrs": {
+        "id": "paragraph-id",
+        "textAlign": "center"
+      },
+      "content": [
+        {
+          "type": "mention",
+          "attrs": {
+            "id": "user-id",
+            "label": "Ada"
+          }
+        },
+        {
+          "type": "hardBreak"
+        },
+        {
+          "type": "text",
+          "text": "styled",
+          "marks": [
+            {
+              "type": "underline"
+            },
+            {
+              "type": "comment",
+              "attrs": {
+                "commentId": "comment-id"
+              }
+            },
+            {
+              "type": "textStyle",
+              "attrs": {
+                "color": "#ff0000"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "columns",
+      "attrs": {
+        "layout": "50-50"
+      },
+      "content": [
+        {
+          "type": "column",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Column content"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "attrs": {
+        "src": "/api/files/image-id/diagram.png",
+        "attachmentId": "image-id",
+        "align": "left",
+        "width": 50
+      }
+    },
+    {
+      "type": "table",
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableCell",
+              "attrs": {
+                "colspan": 2,
+                "rowspan": 1,
+                "colwidth": null
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Merged"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "attrs": {
+        "type": "info",
+        "icon": "rocket"
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Custom icon"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "details",
+      "attrs": {
+        "open": true
+      },
+      "content": [
+        {
+          "type": "detailsSummary",
+          "content": [
+            {
+              "type": "text",
+              "text": "Toggle"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

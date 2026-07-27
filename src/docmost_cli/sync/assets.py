@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 from docmost_cli.api.attachments import attachment_path, upload_attachment
+from docmost_cli.sync.rich_content import sub_markdown_outside_code
 
 ASSETS_DIRNAME = "files"
 
@@ -21,6 +22,7 @@ __all__ = [
     "asset_relative_path",
     "build_asset_entry",
     "collect_attachment_ids",
+    "compute_bytes_hash",
     "compute_file_hash",
     "discover_local_assets",
     "prepare_markdown_assets",
@@ -30,11 +32,23 @@ __all__ = [
 # Markdown image/link destinations. This intentionally targets inline links,
 # which is the format emitted by the converter and Docmost's exporter.
 _MARKDOWN_LINK_RE = re.compile(
-    r"(?P<image>!)?\[(?P<label>[^\]]*)\]\("
-    r"(?P<destination><[^>]+>|[^\s)]+)"
-    r"(?:\s+(?:\"[^\"]*\"|'[^']*'))?\)"
+    r"(?P<image>!)?\["
+    r"(?P<label>(?:\\.|[^\[\]\\]|\[(?:\\.|[^\[\]\\])*\])*)\]\("
+    r"(?P<destination><(?:\\.|[^>])+>|(?:\\.|[^\s()\\]|\((?:\\.|[^()\\])*\))+)"
+    r"(?:\s+(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'))?\)"
 )
 _SERVER_ATTACHMENT_RE = re.compile(r"(?:^|/)(?:api/)?files/([^/?#]+)/")
+_WINDOWS_UNSAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+    *(f"COM{index}" for index in ("¹", "²", "³")),
+    *(f"LPT{index}" for index in ("¹", "²", "³")),
+}
 
 
 @dataclass(frozen=True)
@@ -51,7 +65,12 @@ class LocalAssetReference:
 
 def _safe_file_name(file_name: str, attachment_id: str) -> str:
     name = Path(file_name.replace("\\", "/")).name.strip()
-    return name if name not in {"", ".", ".."} else f"attachment-{attachment_id}"
+    name = _WINDOWS_UNSAFE_FILENAME_RE.sub("-", name).rstrip(" .")
+    if name in {"", ".", ".."}:
+        return f"attachment-{attachment_id}"
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        name = f"_{name}"
+    return name
 
 
 def asset_relative_path(attachment_id: str, file_name: str) -> str:
@@ -71,6 +90,11 @@ def compute_file_hash(path: Path) -> str:
         for chunk in iter(lambda: file.read(1024 * 1024), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
+
+
+def compute_bytes_hash(content: bytes) -> str:
+    """Compute the same SHA-256 manifest hash for in-memory attachment bytes."""
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
 def collect_attachment_ids(document: Any) -> list[str]:
@@ -114,6 +138,7 @@ def build_asset_entry(info: dict[str, Any], relative_path: str, file_path: Path)
         "size": int(info.get("fileSize") or file_path.stat().st_size),
         "page_id": str(info.get("pageId") or ""),
         "content_hash": compute_file_hash(file_path),
+        "server_updated_at": info.get("updatedAt"),
         "server_path": str(
             info.get("path") or attachment_path(str(info["id"]), str(info["fileName"]))
         ),
@@ -129,11 +154,12 @@ def _local_destination(
         if destination.startswith("<") and destination.endswith(">")
         else destination
     )
+    raw = re.sub(r"\\([?#])", lambda match: quote(match.group(1), safe=""), raw)
     parsed = urlsplit(raw)
     if parsed.scheme or parsed.netloc or raw.startswith(("#", "/")):
         return None
 
-    decoded = unquote(parsed.path)
+    decoded = unquote(re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])", r"\1", parsed.path))
     if not decoded:
         return None
 
@@ -157,10 +183,11 @@ def _local_destination(
 def discover_local_assets(markdown: str, dir_path: Path) -> list[LocalAssetReference]:
     """Find local files/images referenced by Markdown content."""
     references: list[LocalAssetReference] = []
-    for match in _MARKDOWN_LINK_RE.finditer(markdown):
+
+    def collect(match: re.Match[str]) -> str:
         resolved = _local_destination(match.group("destination"), dir_path)
         if resolved is None:
-            continue
+            return match.group(0)
         relative_path, absolute_path = resolved
         references.append(
             LocalAssetReference(
@@ -172,6 +199,9 @@ def discover_local_assets(markdown: str, dir_path: Path) -> list[LocalAssetRefer
                 is_image=bool(match.group("image")),
             )
         )
+        return match.group(0)
+
+    sub_markdown_outside_code(markdown, _MARKDOWN_LINK_RE, collect)
     return references
 
 
@@ -302,5 +332,5 @@ def prepare_markdown_assets(
             attachment_ids.append(attachment_id)
         return _attachment_html(reference, info)
 
-    rewritten = _MARKDOWN_LINK_RE.sub(replace_reference, markdown)
+    rewritten = sub_markdown_outside_code(markdown, _MARKDOWN_LINK_RE, replace_reference)
     return rewritten, updated_entries, attachment_ids
