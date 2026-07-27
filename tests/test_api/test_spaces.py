@@ -98,16 +98,54 @@ class TestCreateSpace:
     def test_generates_required_slug_when_omitted(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/spaces/create",
-            json={"id": "new-space", "name": "Release Notes", "slug": "release-notes"},
+            json={"id": "new-space", "name": "Release Notes"},
         )
         with DocmostClient(api_key_settings) as client:
             create_space(client, name="Release Notes")
 
         request = httpx_mock.get_requests()[0]
-        assert json.loads(request.content) == {
-            "name": "Release Notes",
-            "slug": "release-notes",
-        }
+        body = json.loads(request.content)
+        assert body["name"] == "Release Notes"
+        assert body["slug"].startswith("release-notes-")
+        assert len(body["slug"]) <= 100
+
+    def test_preserves_safe_canonical_name_as_generated_slug(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "new-space"},
+        )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="release-notes")
+
+        request = httpx_mock.get_requests()[0]
+        assert json.loads(request.content)["slug"] == "release-notes"
+
+    def test_lossy_normalization_retains_name_uniqueness(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        for resource_id in ("space-team-a", "space-team-hyphen", "space-amp", "space-space"):
+            httpx_mock.add_response(
+                url="https://docs.example.com/api/spaces/create",
+                json={"id": resource_id},
+            )
+
+        with DocmostClient(api_key_settings) as client:
+            for name in ("Team A", "Team-A", "A&B", "A B"):
+                create_space(client, name=name)
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert len(set(slugs)) == 4
+        assert slugs[0].startswith("team-a-")
+        assert slugs[1] == "team-a"
+        assert slugs[2].startswith("a-b-")
+        assert slugs[3].startswith("a-b-")
 
     def test_generates_distinct_slugs_for_non_ascii_names(
         self,

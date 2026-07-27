@@ -18,11 +18,12 @@ __all__ = [
 
 
 def _slug_from_name(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_")
+    canonical_name = name.lower()
+    slug = re.sub(r"[^a-z0-9_-]+", "-", canonical_name).strip("-_")
     digest = hashlib.sha256(name.encode()).hexdigest()[:12]
     if not slug:
         return f"space-{digest}"
-    if len(slug) > 100:
+    if len(slug) > 100 or slug != canonical_name:
         prefix = slug[:87].rstrip("-_")
         slug = f"{prefix}-{digest}" if prefix else f"space-{digest}"
     else:
