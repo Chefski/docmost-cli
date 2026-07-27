@@ -32,35 +32,29 @@ def _print_node(
     prefix: str,
     is_last: bool,
 ) -> None:
-    """Print a single tree node and recurse into children."""
-    connector = "\\-- " if is_last else "+-- "
+    """Print a node and its descendants without recursive Python calls."""
+    stack = [(page, prefix, is_last)]
+    while stack:
+        current_page, current_prefix, current_is_last = stack.pop()
+        connector = "\\-- " if current_is_last else "+-- "
 
-    icon = page.get("icon", "") or ""
-    title = page.get("title", page.get("id", "???"))
+        icon = current_page.get("icon", "") or ""
+        title = current_page.get("title", current_page.get("id", "???"))
+        if len(title) > MAX_TITLE_LEN:
+            title = title[: MAX_TITLE_LEN - 3] + "..."
 
-    # Truncate long titles
-    if len(title) > MAX_TITLE_LEN:
-        title = title[: MAX_TITLE_LEN - 3] + "..."
+        safe_icon = ""
+        if icon:
+            try:
+                icon.encode("cp1252")
+                safe_icon = icon
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
 
-    # Rich uses LegacyWindowsRenderer which bypasses sys.stdout encoding.
-    # Strip emoji that can't be encoded on Windows cp1252.
-    safe_icon = ""
-    if icon:
-        try:
-            icon.encode("cp1252")
-            safe_icon = icon
-        except (UnicodeEncodeError, UnicodeDecodeError):
-            pass
+        label = f"{safe_icon} {title}".strip() if safe_icon else title
+        _console.print(f"{current_prefix}{connector}{label}")
 
-    label = f"{safe_icon} {title}".strip() if safe_icon else title
-    _console.print(f"{prefix}{connector}{label}")
-
-    # Recurse into children
-    children = page.get("children", [])
-    if not children:
-        return
-
-    child_prefix = prefix + ("    " if is_last else "|   ")
-    for j, child in enumerate(children):
-        child_is_last = j == len(children) - 1
-        _print_node(child, child_prefix, child_is_last)
+        children = current_page.get("children", [])
+        child_prefix = current_prefix + ("    " if current_is_last else "|   ")
+        for index in range(len(children) - 1, -1, -1):
+            stack.append((children[index], child_prefix, index == len(children) - 1))

@@ -128,6 +128,13 @@ their hashes and owning pages in `.docmost-manifest.json`. `sync push` uploads n
 replaces changed assets in place, while writing the stable attachment ID back into Docmost page
 content. Relative image/file links to existing local files are treated as page assets.
 
+Pulls are staged and validated before the live directory is replaced. If any page or attachment
+fails to download, the previous sync remains unchanged. A forced pull removes stale pages and
+assets recorded by the old manifest, including files renamed remotely, while preserving unrelated
+local files. The CLI aborts if the target changes while downloads are in progress. Publication
+uses an atomic directory exchange where the platform supports it and a durable recovery journal
+for portable fallback.
+
 Every pull also records a canonical fingerprint of each page's raw server state. Before updating,
 moving, or deleting a page, `sync push` verifies that fingerprint against `/pages/info` and aborts
 the entire push if the page changed remotely. Preserve local edits, pull the space into a separate

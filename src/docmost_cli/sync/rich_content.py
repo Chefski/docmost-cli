@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -303,9 +305,19 @@ def build_pulled_rich_content_state(
     serialized = _serialize_snapshot(content)
     destination = dir_path / snapshot_path
     destination.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = destination.with_suffix(destination.suffix + ".tmp")
-    tmp_path.write_text(serialized + "\n", encoding="utf-8")
-    tmp_path.replace(destination)
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    temporary_path = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as temporary_file:
+            temporary_file.write(serialized + "\n")
+        temporary_path.replace(destination)
+    except BaseException:
+        temporary_path.unlink(missing_ok=True)
+        raise
 
     return {
         "guard_version": _GUARD_VERSION,

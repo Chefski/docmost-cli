@@ -42,6 +42,10 @@ class TestSanitizeFilename:
         # / → -, : → -, ? → -  then collapse, spaces preserved
         assert result == "AC-DC- The Best--019a2a69.md"
 
+    def test_control_characters_are_replaced(self) -> None:
+        result = sanitize_filename("Quarterly\x00Plan\nDraft", FAKE_ID)
+        assert result == "Quarterly-Plan-Draft--019a2a69.md"
+
     def test_very_long_title_truncated(self) -> None:
         long_title = "A" * 120
         result = sanitize_filename(long_title, FAKE_ID)

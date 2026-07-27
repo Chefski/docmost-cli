@@ -18,7 +18,11 @@ def sync_pull_cmd(
     dir_path: Path = typer.Option(
         None, "--dir", help="Target directory (default: ./<space-slug>/)"
     ),
-    force: bool = typer.Option(False, "--force", help="Overwrite local changes without warning"),
+    force: bool = typer.Option(
+        False,
+        "--force",
+        help="Replace previously synced files while preserving unrelated files",
+    ),
 ) -> None:
     """Download all pages from a space to local Markdown files.
 

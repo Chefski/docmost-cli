@@ -7,6 +7,7 @@ import pytest
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pages import (
     PageImportOverrideError,
+    build_page_tree,
     copy_page,
     create_page,
     create_page_via_import,
@@ -26,6 +27,113 @@ from docmost_cli.api.pages import (
     update_page_content,
     update_page_meta,
 )
+
+
+class TestBuildPageTree:
+    def test_follows_more_than_ten_levels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        api_key_settings,
+    ) -> None:
+        def page(level: int) -> dict[str, object]:
+            return {
+                "id": f"page-{level}",
+                "title": f"Page {level}",
+                "hasChildren": level < 1100,
+                "children": [],
+            }
+
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_sidebar_pages",
+            lambda _client, _space_id: {"data": {"items": [page(0)]}},
+        )
+
+        def children(_client, page_id: str, *, space_id: str | None = None):
+            del space_id
+            level = int(page_id.removeprefix("page-"))
+            return {"data": {"items": [page(level + 1)] if level < 1100 else []}}
+
+        monkeypatch.setattr("docmost_cli.api.pages.get_page_children", children)
+        with DocmostClient(api_key_settings) as client:
+            tree = build_page_tree(client, "space-1")
+
+        current = tree[0]
+        for level in range(1101):
+            assert current["id"] == f"page-{level}"
+            if level < 1100:
+                current = current["children"][0]
+
+    def test_depth_limit_raises_instead_of_returning_partial_tree(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        api_key_settings,
+    ) -> None:
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_sidebar_pages",
+            lambda _client, _space_id: {
+                "data": {
+                    "items": [
+                        {
+                            "id": "root",
+                            "title": "Root",
+                            "hasChildren": True,
+                            "children": [],
+                        }
+                    ]
+                }
+            },
+        )
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_page_children",
+            lambda _client, _page_id, **_kwargs: {
+                "data": {
+                    "items": [
+                        {
+                            "id": "child",
+                            "title": "Child",
+                            "hasChildren": True,
+                            "children": [],
+                        }
+                    ]
+                }
+            },
+        )
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(RuntimeError, match="exceeds maximum depth"),
+        ):
+            build_page_tree(client, "space-1", max_depth=1)
+
+    def test_missing_declared_children_raises_instead_of_returning_partial_tree(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        api_key_settings,
+    ) -> None:
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_sidebar_pages",
+            lambda _client, _space_id: {
+                "data": {
+                    "items": [
+                        {
+                            "id": "root",
+                            "title": "Root",
+                            "hasChildren": True,
+                            "children": [],
+                        }
+                    ]
+                }
+            },
+        )
+
+        def missing_children(_client, _page_id, **_kwargs):
+            raise SystemExit(4)
+
+        monkeypatch.setattr("docmost_cli.api.pages.get_page_children", missing_children)
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(RuntimeError, match="complete child tree"),
+        ):
+            build_page_tree(client, "space-1")
 
 
 class TestGetPageInfo:

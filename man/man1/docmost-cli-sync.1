@@ -104,6 +104,14 @@ Creates a directory with one
 file per page (with YAML frontmatter) and a
 .I .docmost\-manifest.json
 tracking sync state.
+.PP
+The complete pull is downloaded and validated in a sibling staging directory
+before publication. If a page, attachment, validation, or filesystem operation
+fails, the previous sync remains in place.
+.PP
+If the target changes while downloads are in progress, pull aborts without
+overwriting the intervening edits. Publication uses an atomic directory exchange
+where supported and a durable recovery journal on portable fallback paths.
 .TP
 .BI \-\-dir " path"
 Target directory.
@@ -112,9 +120,10 @@ Default:
 in the current working directory.
 .TP
 .B \-\-force
-Overwrite local changes without warning.
-Without this flag, locally modified files are preserved and a warning
-is printed.
+Replace the files tracked by the previous manifest without prompting.
+Stale tracked pages and attachments, including remotely renamed pages,
+are removed. Files not tracked by the manifest are preserved.
+Without this flag, a directory with an existing sync manifest is rejected.
 .SS push
 Upload local changes to the Docmost server.
 .PP
