@@ -14,6 +14,7 @@ from docmost_cli.sync.frontmatter import write_sync_file
 from docmost_cli.sync.manifest import (
     MANIFEST_FILENAME,
     build_page_entry,
+    build_server_revision,
     compute_content_hash,
     save_manifest,
 )
@@ -470,3 +471,134 @@ class TestSyncPushDryRunCommand:
         )
         assert result.exit_code == 0
         assert "CREATE" in result.output
+
+
+class TestSyncPushConflictOptions:
+    """CLI wiring for remote conflict protection."""
+
+    def test_push_reports_actionable_remote_conflict(
+        self,
+        tmp_config,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        server_page = {
+            "id": FAKE_PAGE_ID,
+            "title": "My Page",
+            "icon": "",
+            "parentPageId": None,
+            "spaceId": FAKE_SPACE_ID,
+            "content": {"type": "doc", "content": []},
+            "deletedAt": None,
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+        }
+        entry = build_page_entry(
+            title="My Page",
+            filename="page.md",
+            parent_id=None,
+            icon="",
+            content_hash=compute_content_hash("Old.\n"),
+            server_revision=build_server_revision(server_page),
+        )
+        target = _setup_synced_dir(tmp_path, pages={FAKE_PAGE_ID: entry})
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body="Local.\n",
+        )
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                **server_page,
+                "title": "Changed remotely",
+                "updatedAt": "2026-01-02T00:00:00.000Z",
+            },
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "--yes",
+                "sync",
+                "push",
+                "eng",
+                "--dir",
+                str(target),
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "Remote changes detected" in result.output
+        assert "--force" in result.output
+        assert all(
+            str(request.url) != f"{_TEST_URL}/api/pages/update"
+            for request in httpx_mock.get_requests()
+        )
+
+    def test_push_force_applies_local_change(
+        self,
+        tmp_config,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        server_page = {
+            "id": FAKE_PAGE_ID,
+            "title": "My Page",
+            "icon": "",
+            "parentPageId": None,
+            "spaceId": FAKE_SPACE_ID,
+            "content": {"type": "doc", "content": []},
+            "deletedAt": None,
+            "updatedAt": "2026-01-01T00:00:00.000Z",
+        }
+        entry = build_page_entry(
+            title="My Page",
+            filename="page.md",
+            parent_id=None,
+            icon="",
+            content_hash=compute_content_hash("Old.\n"),
+            server_revision=build_server_revision(server_page),
+        )
+        target = _setup_synced_dir(tmp_path, pages={FAKE_PAGE_ID: entry})
+        _write_page(
+            target,
+            "page.md",
+            page_id=FAKE_PAGE_ID,
+            title="My Page",
+            body="Local.\n",
+        )
+        _mock_resolve_space(httpx_mock)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={**server_page, "title": "Changed remotely"},
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/update",
+            json={"id": FAKE_PAGE_ID},
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "--config",
+                str(tmp_config),
+                "--yes",
+                "sync",
+                "push",
+                "eng",
+                "--dir",
+                str(target),
+                "--force",
+            ],
+        )
+
+        assert result.exit_code == 0
+        assert any(
+            str(request.url) == f"{_TEST_URL}/api/pages/update"
+            for request in httpx_mock.get_requests()
+        )

@@ -13,7 +13,11 @@ if TYPE_CHECKING:
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
 from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
-from docmost_cli.sync.manifest import MANIFEST_FILENAME, MANIFEST_VERSION
+from docmost_cli.sync.manifest import (
+    MANIFEST_FILENAME,
+    MANIFEST_VERSION,
+    build_server_revision,
+)
 from docmost_cli.sync.pull import PullResult, flatten_tree, pull_space
 
 # ---------------------------------------------------------------------------
@@ -142,15 +146,19 @@ def _mock_page_content(
     pm_content: dict | None = None,
     markdown_content: str | None = None,
     canonical_available: bool = True,
-    updated_at: str = "2026-07-26T18:00:00.000Z",
+    updated_at: str = "2026-01-01T00:00:00.000Z",
+    *,
+    parent_page_id: str | None = None,
 ) -> None:
-    """Add raw-content and canonical-Markdown page responses."""
+    """Add matching raw-content and canonical-Markdown page responses."""
     content = pm_content or _PM_DOC
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/info",
         json={
             "id": page_id,
             "title": title,
+            "icon": "",
+            "parentPageId": parent_page_id,
             "spaceId": "space-1",
             "updatedAt": updated_at,
             "content": content,
@@ -247,6 +255,18 @@ class TestPullCreatesFiles:
         assert len(manifest["pages"]) == 2
         assert "p1" in manifest["pages"]
         assert "p2" in manifest["pages"]
+        expected_revision = build_server_revision(
+            {
+                "id": "p1",
+                "title": "Page One",
+                "icon": "",
+                "parentPageId": None,
+                "spaceId": "space-1",
+                "content": _PM_DOC,
+                "updatedAt": "2026-01-01T00:00:00.000Z",
+            }
+        )
+        assert manifest["pages"]["p1"]["server_revision"] == expected_revision
 
     def test_uses_server_markdown_and_records_raw_source_guard(
         self,
@@ -442,6 +462,7 @@ class TestPullAttachments:
                 "mimeType": "image/png",
                 "fileSize": 11,
                 "pageId": "p1",
+                "updatedAt": "2026-01-01T00:00:00.000Z",
             },
         )
         httpx_mock.add_response(
@@ -460,6 +481,7 @@ class TestPullAttachments:
         manifest = json.loads((target / MANIFEST_FILENAME).read_text())
         assert manifest["pages"]["p1"]["attachment_ids"] == [attachment_id]
         assert manifest["assets"][attachment_id]["path"] == (f"files/{attachment_id}/diagram.png")
+        assert manifest["assets"][attachment_id]["server_updated_at"] == "2026-01-01T00:00:00.000Z"
 
 
 class TestPullWritesCorrectFrontmatter:
@@ -493,7 +515,12 @@ class TestPullWritesCorrectFrontmatter:
         # Mock content for root page
         _mock_page_content(httpx_mock, "root-1", "Root Page")
         # Mock content for child page
-        _mock_page_content(httpx_mock, "child-1", "Child Page")
+        _mock_page_content(
+            httpx_mock,
+            "child-1",
+            "Child Page",
+            parent_page_id="root-1",
+        )
 
         with _make_client() as client:
             result = pull_space(client, "test", target)

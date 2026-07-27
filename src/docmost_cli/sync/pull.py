@@ -74,7 +74,7 @@ def pull_space(
         PullResult with count and path.
     """
     from docmost_cli.api.attachments import download_attachment
-    from docmost_cli.api.pages import build_page_tree, get_page_content
+    from docmost_cli.api.pages import build_page_tree
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
     from docmost_cli.output.formatter import print_error
@@ -84,10 +84,12 @@ def pull_space(
         build_asset_entry,
         collect_attachment_ids,
     )
+    from docmost_cli.sync.conflicts import fetch_server_page
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         build_manifest,
         build_page_entry,
+        build_server_revision,
         compute_content_hash,
         load_manifest,
         sanitize_filename,
@@ -139,13 +141,24 @@ def pull_space(
         title = page_info["title"]
         _err.print(f"Pulling {i}/{total}: {title}")
 
-        # Keep the raw recovery snapshot and canonical Markdown on the same
-        # page revision. A concurrent editor can otherwise make the guard
-        # describe different content from the Markdown written to disk.
+        # Keep the raw recovery snapshot, remote-conflict baseline, and
+        # canonical Markdown on the same page revision.
+        server_page: dict[str, Any] = {}
         for revision_attempt in range(3):
-            content_data = get_page_content(client, page_id)
-            pm_content = content_data.get("content")
-            updated_at = content_data.get("updatedAt")
+            fetched_page = fetch_server_page(
+                client,
+                page_id,
+                failure_suffix="The pull was not completed.",
+            )
+            if fetched_page is None:
+                print_error(
+                    f"Page {page_id} disappeared while it was being pulled. "
+                    "The pull was not completed."
+                )
+            assert fetched_page is not None
+            server_page = fetched_page
+            pm_content = server_page.get("content")
+            updated_at = server_page.get("updatedAt")
             expected_updated_at = updated_at if isinstance(updated_at, str) else None
             try:
                 canonical_markdown = fetch_canonical_markdown(
@@ -163,6 +176,9 @@ def pull_space(
                 continue
             break
 
+        title = str(server_page.get("title") or title)
+        parent_id = server_page.get("parentPageId", page_info["parent_id"])
+        icon = str(server_page.get("icon") or "")
         rich_content = build_pulled_rich_content_state(dir_path, page_id, pm_content)
         if expected_updated_at is None:
             rich_content["unsafe_features"].append("conversion:unverified-revision")
@@ -222,8 +238,8 @@ def pull_space(
         metadata = {
             "id": page_id,
             "title": title,
-            "parent_id": page_info["parent_id"] or "",
-            "icon": page_info["icon"],
+            "parent_id": parent_id or "",
+            "icon": icon,
         }
         write_sync_file(dir_path / filename, metadata, markdown)
 
@@ -232,10 +248,11 @@ def pull_space(
         entry = build_page_entry(
             title=title,
             filename=filename,
-            parent_id=page_info["parent_id"],
-            icon=page_info["icon"],
+            parent_id=parent_id,
+            icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            server_revision=build_server_revision(server_page),
             rich_content=rich_content,
         )
         page_entries.append({"id": page_id, **entry})

@@ -278,12 +278,24 @@ Enables documentation-as-code workflows with git version control.
 
 ```
 docmost-cli sync pull <space>  [--dir PATH] [--force]     # Download pages → local Markdown files
-docmost-cli sync push <space>  [--dir PATH] [--dry-run] [--delete] [--yes]  # Upload local changes
+docmost-cli sync push <space>  [--dir PATH] [--dry-run] [--delete] [--force] [--yes]  # Upload local changes
 docmost-cli sync status <space> [--dir PATH]               # Show changes since last pull
 ```
 
 **Local directory format:**
 - Flat directory with `.docmost-manifest.json` tracking sync state
+- Manifest v3 stores a canonical SHA-256 fingerprint of raw `/pages/info`
+  content and metadata for every pulled page
+- Push checks all remote revisions before any update, move, or deletion;
+  stale and legacy baselines abort with page-level details
+- Locally changed tracked attachments compare the current remote bytes with
+  their stored pulled fingerprint before any in-place byte replacement
+- `sync push --force` explicitly applies local changes despite conflicts;
+  forced conflicting pages are not silently rebaselined
+- Conflict recovery preserves local edits: pull into a separate `--dir`, then
+  merge the local and remote copies instead of force-pulling over active files
+- Revision checks are a best-effort preflight, not atomic compare-and-swap,
+  because current Docmost mutations expose no conditional revision token
 - Each page is `{title}--{id_prefix}.md` with YAML frontmatter (`id`, `title`, `parent_id`, `icon`)
 - Referenced assets are stored as `files/{attachment_id}/{filename}` and tracked by hash/owner
 - Raw pull-time ProseMirror snapshots are stored under `.docmost/raw-pages/` for loss prevention
