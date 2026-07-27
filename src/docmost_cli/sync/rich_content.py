@@ -20,7 +20,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from docmost_cli.api.client import DocmostClient
-    from docmost_cli.sync.diff import SyncDiff
+    from docmost_cli.sync.diff import PageChange, SyncDiff
 
 __all__ = [
     "PageRevisionChangedError",
@@ -28,6 +28,7 @@ __all__ = [
     "analyze_prosemirror",
     "build_pulled_rich_content_state",
     "fetch_canonical_markdown",
+    "find_current_rich_content_conflict",
     "find_rich_content_conflicts",
     "markdown_rich_content_state",
     "rewrite_attachment_urls",
@@ -71,6 +72,7 @@ _SERVER_ATTACHMENT_URL_RE = re.compile(
     r"^(?:https?://[^/\s)>]+)?/(?:api/)?files/(?P<attachment_id>[^/]+)/[^\s)>\"']+$"
 )
 _CANONICAL_MARKDOWN_UNAVAILABLE = frozenset({400, 404})
+_FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)$")
 
 
 @dataclass(frozen=True)
@@ -181,7 +183,7 @@ def fetch_canonical_markdown(
 
 
 def rewrite_attachment_urls(markdown: str, attachment_paths: Mapping[str, str]) -> str:
-    """Rewrite only Markdown link/image destinations, leaving literal URLs intact."""
+    """Rewrite Markdown attachment destinations outside literal code contexts."""
 
     def replace_destination(match: re.Match[str]) -> str:
         raw_destination = match.group("destination")
@@ -199,7 +201,52 @@ def rewrite_attachment_urls(markdown: str, attachment_paths: Mapping[str, str]) 
             return match.group(0)
         return f"{match.group('prefix')}{local_path}{match.group('suffix')}"
 
-    return _MARKDOWN_LINK_RE.sub(replace_destination, markdown)
+    protected_ranges = _markdown_code_ranges(markdown)
+    if not protected_ranges:
+        return _MARKDOWN_LINK_RE.sub(replace_destination, markdown)
+
+    rewritten: list[str] = []
+    cursor = 0
+    for start, end in protected_ranges:
+        rewritten.append(_MARKDOWN_LINK_RE.sub(replace_destination, markdown[cursor:start]))
+        rewritten.append(markdown[start:end])
+        cursor = end
+    rewritten.append(_MARKDOWN_LINK_RE.sub(replace_destination, markdown[cursor:]))
+    return "".join(rewritten)
+
+
+def find_current_rich_content_conflict(
+    client: DocmostClient,
+    change: PageChange,
+) -> RichContentConflict | None:
+    """Re-check the current server document immediately before replacement.
+
+    Legacy manifest entries without rich-content guard metadata remain
+    compatible. Guarded entries are re-fetched so rich structures added by a
+    concurrent Docmost editor cannot be overwritten from a stale safe snapshot.
+    """
+    state = (change.manifest_entry or {}).get("rich_content")
+    if state is None:
+        return None
+
+    from docmost_cli.api.pages import get_page_content
+
+    current = get_page_content(client, change.page_id)
+    features = analyze_prosemirror(current.get("content"))
+    if not features:
+        return None
+
+    entry = change.manifest_entry or {}
+    meta = change.local_meta or {}
+    raw_snapshot_path = state.get("snapshot_path") if isinstance(state, dict) else None
+    snapshot_path = raw_snapshot_path if isinstance(raw_snapshot_path, str) else None
+    return RichContentConflict(
+        page_id=change.page_id,
+        filename=change.filename,
+        title=meta.get("title") or str(entry.get("title") or change.page_id),
+        features=features,
+        snapshot_path=snapshot_path,
+    )
 
 
 def build_pulled_rich_content_state(
@@ -313,6 +360,104 @@ def _check_mark(
             features.add("content:invalid-mark-attributes")
     elif _has_meaningful_attributes(mark.get("attrs")):
         features.add(f"mark:{mark_type}.attributes")
+
+
+def _markdown_code_ranges(markdown: str) -> list[tuple[int, int]]:
+    """Return fenced-block and inline-code ranges in source order."""
+    fenced: list[tuple[int, int]] = []
+    lines = markdown.splitlines(keepends=True)
+    offsets: list[int] = []
+    offset = 0
+    for line in lines:
+        offsets.append(offset)
+        offset += len(line)
+
+    line_index = 0
+    while line_index < len(lines):
+        line_text = lines[line_index].rstrip("\r\n")
+        opening = _FENCE_OPEN_RE.match(line_text)
+        if opening is None:
+            line_index += 1
+            continue
+
+        fence = opening.group("fence")
+        if fence.startswith("`") and "`" in opening.group("info"):
+            line_index += 1
+            continue
+
+        marker = fence[0]
+        minimum_length = len(fence)
+        end_index = len(lines)
+        for candidate_index in range(line_index + 1, len(lines)):
+            candidate = lines[candidate_index].rstrip("\r\n")
+            stripped = candidate.lstrip(" ")
+            indent = len(candidate) - len(stripped)
+            marker_length = len(stripped) - len(stripped.lstrip(marker))
+            trailing = stripped[marker_length:]
+            if indent <= 3 and marker_length >= minimum_length and trailing.strip(" \t") == "":
+                end_index = candidate_index + 1
+                break
+
+        start = offsets[line_index]
+        end = offsets[end_index] if end_index < len(offsets) else len(markdown)
+        fenced.append((start, end))
+        line_index = end_index
+
+    protected = list(fenced)
+    gap_start = 0
+    for fence_start, fence_end in [*fenced, (len(markdown), len(markdown))]:
+        protected.extend(_inline_code_ranges(markdown, gap_start, fence_start))
+        gap_start = fence_end
+    return sorted(protected)
+
+
+def _inline_code_ranges(markdown: str, start: int, end: int) -> list[tuple[int, int]]:
+    """Return closed CommonMark backtick-code spans inside one non-fenced range."""
+    ranges: list[tuple[int, int]] = []
+    cursor = start
+    while cursor < end:
+        opening = markdown.find("`", cursor, end)
+        if opening < 0:
+            break
+        if _is_escaped(markdown, opening):
+            cursor = opening + 1
+            continue
+
+        opening_end = opening
+        while opening_end < end and markdown[opening_end] == "`":
+            opening_end += 1
+        run_length = opening_end - opening
+
+        candidate = opening_end
+        closing_end: int | None = None
+        while candidate < end:
+            candidate = markdown.find("`", candidate, end)
+            if candidate < 0:
+                break
+            candidate_end = candidate
+            while candidate_end < end and markdown[candidate_end] == "`":
+                candidate_end += 1
+            if candidate_end - candidate == run_length and not _is_escaped(markdown, candidate):
+                closing_end = candidate_end
+                break
+            candidate = candidate_end
+
+        if closing_end is None:
+            cursor = opening_end
+            continue
+        ranges.append((opening, closing_end))
+        cursor = closing_end
+    return ranges
+
+
+def _is_escaped(value: str, index: int) -> bool:
+    """Return whether the character at ``index`` has an odd backslash prefix."""
+    backslashes = 0
+    index -= 1
+    while index >= 0 and value[index] == "\\":
+        backslashes += 1
+        index -= 1
+    return backslashes % 2 == 1
 
 
 def _check_node_attributes(

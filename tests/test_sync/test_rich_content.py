@@ -12,6 +12,7 @@ from docmost_cli.sync.rich_content import (
     analyze_prosemirror,
     build_pulled_rich_content_state,
     fetch_canonical_markdown,
+    find_current_rich_content_conflict,
     find_rich_content_conflicts,
     rewrite_attachment_urls,
 )
@@ -366,6 +367,28 @@ def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
     assert "```\n/api/files/pdf-id/file.pdf\n```" in rewritten
 
 
+def test_does_not_rewrite_attachment_links_inside_code() -> None:
+    markdown = (
+        "Outside: ![diagram](/api/files/image-id/diagram.png)\n"
+        "Inline: `![diagram](/api/files/image-id/diagram.png)`\n"
+        "~~~markdown\n"
+        "[PDF](/api/files/pdf-id/file.pdf)\n"
+        "~~~\n"
+    )
+
+    rewritten = rewrite_attachment_urls(
+        markdown,
+        {
+            "image-id": "files/image-id/diagram.png",
+            "pdf-id": "files/pdf-id/file.pdf",
+        },
+    )
+
+    assert "Outside: ![diagram](files/image-id/diagram.png)" in rewritten
+    assert "Inline: `![diagram](/api/files/image-id/diagram.png)`" in rewritten
+    assert "~~~markdown\n[PDF](/api/files/pdf-id/file.pdf)\n~~~" in rewritten
+
+
 def test_rewrites_attachment_with_escaped_and_nested_label() -> None:
     markdown = (
         r"![Before \] after](/api/files/image-id/diagram.png)"
@@ -408,6 +431,42 @@ def test_content_edit_is_blocked_when_pull_found_unsafe_features() -> None:
     assert len(conflicts) == 1
     assert conflicts[0].features == ("mark:comment", "node:mention")
     assert conflicts[0].snapshot_path == ".docmost/raw-pages/page-1.json"
+
+
+def test_current_remote_rich_content_is_rechecked_before_replacement(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        json={
+            "id": "page-1",
+            "title": "Rich page",
+            "content": {
+                "type": "doc",
+                "content": [{"type": "mention", "attrs": {"id": "user-1"}}],
+            },
+        },
+    )
+    change = PageChange(
+        page_id="page-1",
+        filename="rich.md",
+        changes={ChangeType.CONTENT_CHANGED},
+        local_meta={"title": "Rich page"},
+        local_body="Stale local edit\n",
+        manifest_entry={
+            "title": "Rich page",
+            "rich_content": {
+                "guard_version": 1,
+                "source": "prosemirror",
+                "snapshot_path": ".docmost/raw-pages/page-1.json",
+                "unsafe_features": [],
+            },
+        },
+    )
+
+    with _make_client() as client:
+        conflict = find_current_rich_content_conflict(client, change)
+
+    assert conflict is not None
+    assert conflict.features == ("node:mention",)
 
 
 def test_metadata_only_edit_is_not_blocked() -> None:

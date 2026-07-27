@@ -5,11 +5,12 @@
 - Restrict automatic HTTP retries to replay-safe requests so ambiguous create, import,
   duplicate, upload, and other mutation failures cannot silently create duplicates
 - Prevent lossy sync pushes by pairing server-side Markdown with same-revision raw ProseMirror
-  snapshots and blocking replacements of pages with unsupported rich editor features
+  snapshots, rechecking guarded pages before replacement, and blocking unsupported rich features
 - Add page attachment upload, in-page insertion, stable URL lookup, in-place replacement, info, and download commands
 - Preserve attachments in page export/import through native portable ZIP archives
 - Preserve attachment IDs and bytes during sync using local `files/<attachment-id>/...` assets and manifest hashes
 - Use Docmost's shared `/pages/update` content contract so page IDs and attachment ownership remain stable on Community and Enterprise editions
+- Match current Docmost page routes for creation, cross-space copy/move, root moves, and content retrieval
 
 ## 0.4.0 (2026-03-22)
 

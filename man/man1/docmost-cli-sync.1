@@ -125,6 +125,8 @@ Requires a prior
 to establish the manifest.
 Content replacement is refused when the pull\-time guard shows that Markdown
 would discard rich editor features.
+Guarded pages are fetched again immediately before replacement so rich content
+added in Docmost after the last pull is also protected.
 Prompts for confirmation before applying changes unless
 .B \-\-yes
 or

@@ -190,6 +190,9 @@ def push_space(
 
         # Content update
         if has_content_change:
+            # Validate before asset preparation because changed assets are
+            # uploaded in place and are themselves a server mutation.
+            _ensure_current_rich_content_is_safe(client, change)
             try:
                 server_body, asset_entries, attachment_ids = prepare_markdown_assets(
                     client,
@@ -200,6 +203,9 @@ def push_space(
                 )
             except FileNotFoundError as exc:
                 print_error(f"Attachment file not found: {exc.filename or exc}")
+            # Revalidate after any uploads so a concurrent editor cannot add a
+            # protected feature while local assets are being prepared.
+            _ensure_current_rich_content_is_safe(client, change)
             update_page_content(client, page_id=page_id, content=server_body)
             manifest["assets"].update(asset_entries)
             _err.print(f"  Updated: {title}")
@@ -393,6 +399,24 @@ def _print_rich_content_conflicts(conflicts: list[RichContentConflict]) -> None:
         _err.print(f"  {conflict.title} ({conflict.filename}): {features}")
         if conflict.snapshot_path:
             _err.print(f"    Raw source snapshot: {conflict.snapshot_path}")
+
+
+def _ensure_current_rich_content_is_safe(
+    client: DocmostClient,
+    change: PageChange,
+) -> None:
+    """Refuse a guarded replacement when the current server page is lossy."""
+    from docmost_cli.output.formatter import print_error
+    from docmost_cli.sync.rich_content import find_current_rich_content_conflict
+
+    current_conflict = find_current_rich_content_conflict(client, change)
+    if current_conflict is None:
+        return
+    _print_rich_content_conflicts([current_conflict])
+    print_error(
+        "Refusing to replace rich content added in Docmost since the last pull. "
+        "Pull again before editing this page locally."
+    )
 
 
 def _print_dry_run(diff: SyncDiff) -> None:
