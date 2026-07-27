@@ -353,15 +353,21 @@ def class_fields(source: str, class_name: str) -> tuple[set[str], set[str]]:
             continue
 
         field_match = re.match(
-            r"^\s*([A-Za-z_]\w*)(\?)?\s*(?::[^=;]+|=\s*[^;]+);?\s*$",
+            r"^\s*(?:(?:public|private|protected|readonly|declare|static|abstract)\s+)*"
+            r"([A-Za-z_]\w*)([?!])?\s*(?::[^=;]+|=\s*[^;]+);?\s*$",
             line,
         )
         if field_match:
-            name, question_mark = field_match.groups()
+            name, _declaration_marker = field_match.groups()
             fields.add(name)
             decorators = " ".join(pending_decorators)
             has_initializer = "=" in line
-            if question_mark is None and "@IsOptional" not in decorators and not has_initializer:
+            conditionally_validated = "@ValidateIf" in decorators
+            if (
+                "@IsOptional" not in decorators
+                and not conditionally_validated
+                and not has_initializer
+            ):
                 required.add(name)
         pending_decorators = []
         decorator_depth = 0
@@ -455,6 +461,7 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
     for operation_name, operation in operations.items():
         upstream = operation["upstream"]
         source_path = docmost_repo / upstream["file"]
+        bound_body_types: frozenset[str] = frozenset()
         try:
             source = _read(source_path)
             if upstream["kind"] == "controller":
@@ -467,6 +474,7 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
                     )
                 else:
                     binding = bindings[route]
+                    bound_body_types = binding.body_types
                     expected_handler = upstream["handler"]
                     if binding.name != expected_handler:
                         errors.append(
@@ -567,6 +575,11 @@ def check_contract(contract: dict[str, Any], docmost_repo: Path) -> list[str]:
         allowed_fields = set(operation.get("allowed_fields", []))
         required_fields = set(operation.get("required_fields", []))
         has_schema_sources = bool(operation.get("schema_sources"))
+        if bound_body_types and not has_schema_sources:
+            errors.append(
+                f"{operation_name}: controller body types "
+                f"{sorted(bound_body_types)} require schema_sources"
+            )
         if has_schema_sources and schema_fields != allowed_fields:
             errors.append(
                 f"{operation_name}: contract allowed_fields do not match its schema "

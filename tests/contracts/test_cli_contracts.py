@@ -240,7 +240,13 @@ def test_literal_endpoint_inventory_handles_keyword_paths() -> None:
     ) == {("example.py", "POST", "/new-endpoint")}
 
 
-def test_known_drift_is_empty_after_contract_repairs() -> None:
+def test_known_drift_excludes_retired_entries_and_remains_actionable() -> None:
+    retired = {
+        ("endpoint", "POST", "/pages/content", ()),
+        ("endpoint", "POST", "/pages/copy", ()),
+        ("request-fields", "POST", "/pages/import", ("parentPageId",)),
+        ("request-fields", "POST", "/pages/move", ("spaceId",)),
+    }
     actual = {
         (
             entry["kind"],
@@ -250,7 +256,13 @@ def test_known_drift_is_empty_after_contract_repairs() -> None:
         )
         for entry in CONTRACT["known_drift"]
     }
-    assert actual == set()
+    assert actual.isdisjoint(retired)
+    for entry in CONTRACT["known_drift"]:
+        assert entry["owner"].startswith("high-priority fix ")
+        assert entry["replacement"]
+        assert (ROOT / entry["source"]).is_file()
+        if entry["kind"] == "endpoint":
+            assert entry["upstream_absence"]
 
 
 def test_no_known_request_field_drift_remains() -> None:

@@ -99,6 +99,33 @@ export class ExampleDto {
     )
 
 
+def test_dto_runtime_decorators_determine_requiredness() -> None:
+    source = """
+export class ExampleDto {
+    @IsString()
+    optionalInTypeScript?: string;
+
+    @IsOptional()
+    @IsString()
+    optionalAtRuntime?: string;
+
+    @ValidateIf((dto) => dto.other !== undefined)
+    conditionallyValidated?: string;
+
+    readonly definiteAtRuntime!: string;
+}
+"""
+    assert class_fields(source, "ExampleDto") == (
+        {
+            "conditionallyValidated",
+            "definiteAtRuntime",
+            "optionalAtRuntime",
+            "optionalInTypeScript",
+        },
+        {"definiteAtRuntime", "optionalInTypeScript"},
+    )
+
+
 def test_dto_inheritance_requires_the_declared_wrapper_and_base() -> None:
     source = """
 export class UpdateSpaceDto extends PartialType(CreateSpaceDto) {}
@@ -216,6 +243,42 @@ export async function importPage(file: File, spaceId: string) {
 
     assert check_contract(contract, tmp_path) == [
         "pages.import: multipart file fields changed; expected ['file'], got ['document']"
+    ]
+
+
+def test_contract_check_requires_schema_sources_for_controller_body_types(
+    tmp_path: Path,
+) -> None:
+    controller = tmp_path / "controller.ts"
+    controller.write_text(
+        """
+@Controller('pages')
+export class PageController {
+  @Post('create')
+  async create(@Body() dto: CreatePageDto) {}
+}
+"""
+    )
+    contract = {
+        "operations": {
+            "pages.create": {
+                "method": "POST",
+                "path": "/pages/create",
+                "allowed_fields": ["invented"],
+                "required_fields": [],
+                "upstream": {
+                    "kind": "controller",
+                    "file": "controller.ts",
+                    "handler": "create",
+                    "body_types": ["CreatePageDto"],
+                },
+            }
+        },
+        "known_drift": [],
+    }
+
+    assert check_contract(contract, tmp_path) == [
+        "pages.create: controller body types ['CreatePageDto'] require schema_sources"
     ]
 
 
