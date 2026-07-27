@@ -27,7 +27,8 @@ def sync_pull_cmd(
     """Download all pages from a space to local Markdown files.
 
     Creates a directory with one .md file per page (with YAML frontmatter)
-    and a .docmost-manifest.json tracking sync state.
+    and a .docmost-manifest.json tracking sync state. Raw ProseMirror
+    snapshots protect rich editor features that Markdown cannot preserve.
 
     See also: sync push (upload changes), sync status (show changes).
     """
@@ -100,6 +101,7 @@ def sync_push_cmd(
 
     Requires a prior 'sync pull' to establish the manifest.
     Use --dry-run to preview changes before applying.
+    Content replacements that would discard protected rich content are refused.
 
     See also: sync status (preview changes), sync pull (download from server).
     """
