@@ -408,6 +408,17 @@ def test_does_not_rewrite_attachment_urls_from_another_origin() -> None:
     assert rewritten == markdown
 
 
+def test_rewrites_markdown_escaped_attachment_url() -> None:
+    markdown = r"[PDF](/api/files/pdf-id/file\(final\).pdf)"
+
+    rewritten = rewrite_attachment_urls(
+        markdown,
+        {"pdf-id": "files/pdf-id/file%28final%29.pdf"},
+    )
+
+    assert rewritten == "[PDF](files/pdf-id/file%28final%29.pdf)"
+
+
 def test_rewrites_attachment_with_escaped_and_nested_label() -> None:
     markdown = (
         r"![Before \] after](/api/files/image-id/diagram.png)"

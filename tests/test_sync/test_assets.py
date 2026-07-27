@@ -86,6 +86,29 @@ def test_discover_local_assets_decodes_escaped_destination(tmp_path: Path) -> No
     assert references[0].absolute_path == asset
 
 
+def test_discover_local_assets_preserves_escaped_query_characters(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / "report?#.pdf"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"pdf")
+
+    references = discover_local_assets(r"[Report](files/report\?\#.pdf)", tmp_path)
+
+    assert references[0].absolute_path == asset
+
+
+def test_discover_local_assets_ignores_code_examples(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / "report.pdf"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"pdf")
+    markdown = (
+        "`[inline](files/report.pdf)`\n"
+        "```\n[fenced](files/report.pdf)\n```\n"
+        "    [indented](files/report.pdf)\n"
+    )
+
+    assert discover_local_assets(markdown, tmp_path) == []
+
+
 def test_prepare_new_image_uploads_and_embeds_stable_id(
     httpx_mock,
     tmp_path: Path,

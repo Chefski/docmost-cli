@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote, urlsplit
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Callable, Mapping
 
     from docmost_cli.api.client import DocmostClient
     from docmost_cli.sync.diff import PageChange, SyncDiff
@@ -32,6 +32,7 @@ __all__ = [
     "find_rich_content_conflicts",
     "markdown_rich_content_state",
     "rewrite_attachment_urls",
+    "sub_markdown_outside_code",
 ]
 
 _GUARD_VERSION = 1
@@ -69,7 +70,7 @@ _MARKDOWN_LINK_RE = re.compile(
     r"(?P<suffix>(?:\s+(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'))?\))"
 )
 _SERVER_ATTACHMENT_URL_RE = re.compile(
-    r"^(?:https?://[^/\s)>]+)?/(?:api/)?files/(?P<attachment_id>[^/]+)/[^\s)>\"']+$"
+    r"^(?:https?://[^/\s>]+)?/(?:api/)?files/(?P<attachment_id>[^/]+)/[^\s>\"']+$"
 )
 _CANONICAL_MARKDOWN_UNAVAILABLE = frozenset({400, 404})
 _FENCE_OPEN_RE = re.compile(r"^ {0,3}(?P<fence>`{3,}|~{3,})(?P<info>[^\r\n]*)$")
@@ -199,10 +200,15 @@ def rewrite_attachment_urls(
             if raw_destination.startswith("<") and raw_destination.endswith(">")
             else raw_destination
         )
-        server_match = _SERVER_ATTACHMENT_URL_RE.fullmatch(destination)
+        normalized_destination = re.sub(
+            r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])",
+            r"\1",
+            destination,
+        )
+        server_match = _SERVER_ATTACHMENT_URL_RE.fullmatch(normalized_destination)
         if server_match is None:
             return match.group(0)
-        parsed_destination = urlsplit(destination)
+        parsed_destination = urlsplit(normalized_destination)
         if parsed_destination.netloc:
             if docmost_origin is None:
                 return match.group(0)
@@ -218,17 +224,26 @@ def rewrite_attachment_urls(
             return match.group(0)
         return f"{match.group('prefix')}{local_path}{match.group('suffix')}"
 
+    return sub_markdown_outside_code(markdown, _MARKDOWN_LINK_RE, replace_destination)
+
+
+def sub_markdown_outside_code(
+    markdown: str,
+    pattern: re.Pattern[str],
+    replacement: Callable[[re.Match[str]], str],
+) -> str:
+    """Apply a regex substitution only outside Markdown code contexts."""
     protected_ranges = _markdown_code_ranges(markdown)
     if not protected_ranges:
-        return _MARKDOWN_LINK_RE.sub(replace_destination, markdown)
+        return pattern.sub(replacement, markdown)
 
     rewritten: list[str] = []
     cursor = 0
     for start, end in protected_ranges:
-        rewritten.append(_MARKDOWN_LINK_RE.sub(replace_destination, markdown[cursor:start]))
+        rewritten.append(pattern.sub(replacement, markdown[cursor:start]))
         rewritten.append(markdown[start:end])
         cursor = end
-    rewritten.append(_MARKDOWN_LINK_RE.sub(replace_destination, markdown[cursor:]))
+    rewritten.append(pattern.sub(replacement, markdown[cursor:]))
     return "".join(rewritten)
 
 

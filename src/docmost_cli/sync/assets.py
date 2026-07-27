@@ -11,6 +11,7 @@ from typing import Any
 from urllib.parse import quote, unquote, urlsplit
 
 from docmost_cli.api.attachments import attachment_path, upload_attachment
+from docmost_cli.sync.rich_content import sub_markdown_outside_code
 
 ASSETS_DIRNAME = "files"
 
@@ -130,12 +131,12 @@ def _local_destination(
         if destination.startswith("<") and destination.endswith(">")
         else destination
     )
-    raw = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])", r"\1", raw)
+    raw = re.sub(r"\\([?#])", lambda match: quote(match.group(1), safe=""), raw)
     parsed = urlsplit(raw)
     if parsed.scheme or parsed.netloc or raw.startswith(("#", "/")):
         return None
 
-    decoded = unquote(parsed.path)
+    decoded = unquote(re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])", r"\1", parsed.path))
     if not decoded:
         return None
 
@@ -159,10 +160,11 @@ def _local_destination(
 def discover_local_assets(markdown: str, dir_path: Path) -> list[LocalAssetReference]:
     """Find local files/images referenced by Markdown content."""
     references: list[LocalAssetReference] = []
-    for match in _MARKDOWN_LINK_RE.finditer(markdown):
+
+    def collect(match: re.Match[str]) -> str:
         resolved = _local_destination(match.group("destination"), dir_path)
         if resolved is None:
-            continue
+            return match.group(0)
         relative_path, absolute_path = resolved
         references.append(
             LocalAssetReference(
@@ -174,6 +176,9 @@ def discover_local_assets(markdown: str, dir_path: Path) -> list[LocalAssetRefer
                 is_image=bool(match.group("image")),
             )
         )
+        return match.group(0)
+
+    sub_markdown_outside_code(markdown, _MARKDOWN_LINK_RE, collect)
     return references
 
 
@@ -304,5 +309,5 @@ def prepare_markdown_assets(
             attachment_ids.append(attachment_id)
         return _attachment_html(reference, info)
 
-    rewritten = _MARKDOWN_LINK_RE.sub(replace_reference, markdown)
+    rewritten = sub_markdown_outside_code(markdown, _MARKDOWN_LINK_RE, replace_reference)
     return rewritten, updated_entries, attachment_ids
