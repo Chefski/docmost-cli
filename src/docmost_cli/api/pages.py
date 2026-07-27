@@ -660,39 +660,36 @@ def _fill_children(
     max_depth: int | None,
     ancestors: set[str],
 ) -> None:
-    """Recursively fetch children if the sidebar API returned them empty."""
-    page_id = str(page["id"])
-    if page_id in ancestors:
-        raise RuntimeError(f"page tree contains a cycle at page '{page_id}'")
-    ancestors = {*ancestors, page_id}
+    """Fill descendants iteratively so valid deep trees do not hit recursion limits."""
+    stack: list[tuple[dict[str, Any], int, set[str]]] = [(page, depth, ancestors)]
+    while stack:
+        current_page, current_depth, current_ancestors = stack.pop()
+        page_id = str(current_page["id"])
+        if page_id in current_ancestors:
+            raise RuntimeError(f"page tree contains a cycle at page '{page_id}'")
+        child_ancestors = {*current_ancestors, page_id}
 
-    children = page.get("children", [])
-    if max_depth is not None and depth >= max_depth:
-        if children or page.get("hasChildren", False):
-            raise RuntimeError(f"page tree exceeds maximum depth {max_depth} at page '{page_id}'")
-        return
+        children = current_page.get("children", [])
+        if max_depth is not None and current_depth >= max_depth:
+            if children or current_page.get("hasChildren", False):
+                raise RuntimeError(
+                    f"page tree exceeds maximum depth {max_depth} at page '{page_id}'"
+                )
+            continue
 
-    # If sidebar returned empty children, fetch via sidebar-pages with pageId
-    if not children and page.get("hasChildren", False):
-        try:
-            from docmost_cli.api.pagination import extract_items
+        if not children and current_page.get("hasChildren", False):
+            try:
+                from docmost_cli.api.pagination import extract_items
 
-            result = get_page_children(client, page["id"], space_id=space_id)
-            children = extract_items(result)
-            page["children"] = children
-        except SystemExit as exc:
-            if exc.code not in (4,):
-                raise
-            raise RuntimeError(
-                f"could not fetch the complete child tree below page '{page_id}'"
-            ) from exc
+                result = get_page_children(client, current_page["id"], space_id=space_id)
+                children = extract_items(result)
+                current_page["children"] = children
+            except SystemExit as exc:
+                if exc.code not in (4,):
+                    raise
+                raise RuntimeError(
+                    f"could not fetch the complete child tree below page '{page_id}'"
+                ) from exc
 
-    for child in children:
-        _fill_children(
-            client,
-            child,
-            space_id=space_id,
-            depth=depth + 1,
-            max_depth=max_depth,
-            ancestors=ancestors,
-        )
+        for child in reversed(children):
+            stack.append((child, current_depth + 1, child_ancestors))

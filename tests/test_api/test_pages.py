@@ -39,7 +39,7 @@ class TestBuildPageTree:
             return {
                 "id": f"page-{level}",
                 "title": f"Page {level}",
-                "hasChildren": level < 12,
+                "hasChildren": level < 1100,
                 "children": [],
             }
 
@@ -51,16 +51,16 @@ class TestBuildPageTree:
         def children(_client, page_id: str, *, space_id: str | None = None):
             del space_id
             level = int(page_id.removeprefix("page-"))
-            return {"data": {"items": [page(level + 1)] if level < 12 else []}}
+            return {"data": {"items": [page(level + 1)] if level < 1100 else []}}
 
         monkeypatch.setattr("docmost_cli.api.pages.get_page_children", children)
         with DocmostClient(api_key_settings) as client:
             tree = build_page_tree(client, "space-1")
 
         current = tree[0]
-        for level in range(13):
+        for level in range(1101):
             assert current["id"] == f"page-{level}"
-            if level < 12:
+            if level < 1100:
                 current = current["children"][0]
 
     def test_depth_limit_raises_instead_of_returning_partial_tree(

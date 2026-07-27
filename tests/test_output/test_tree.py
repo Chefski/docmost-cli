@@ -63,3 +63,19 @@ class TestPrintTree:
         output = capsys.readouterr().out
         assert "book" in output
         assert "Docs" in output
+
+    def test_deep_tree_does_not_hit_recursion_limit(self, capsys) -> None:
+        root: dict[str, object] = {"id": "page-0", "title": "Page 0", "children": []}
+        current = root
+        for level in range(1, 1101):
+            child: dict[str, object] = {
+                "id": f"page-{level}",
+                "title": f"Page {level}",
+                "children": [],
+            }
+            current["children"] = [child]
+            current = child
+
+        print_tree([root])
+
+        assert "Page 1100" in capsys.readouterr().out

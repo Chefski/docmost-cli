@@ -332,6 +332,77 @@ def _atomic_exchange_directories(left: Path, right: Path) -> bool:
     raise OSError(error_number, os.strerror(error_number))
 
 
+def _rename_directory_noreplace(source: Path, target: Path) -> None:
+    """Rename a directory only if the target is still absent."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    source_bytes = os.fsencode(source)
+    target_bytes = os.fsencode(target)
+    if sys.platform == "darwin":
+        renamex_np = getattr(libc, "renamex_np", None)
+        if renamex_np is not None:
+            renamex_np.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            renamex_np.restype = ctypes.c_int
+            result = renamex_np(source_bytes, target_bytes, 0x00000004)  # RENAME_EXCL
+            if result == 0:
+                return
+            error_number = ctypes.get_errno()
+            if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise FileExistsError(error_number, os.strerror(error_number), target)
+            if error_number not in {
+                errno.EINVAL,
+                errno.ENOSYS,
+                getattr(errno, "ENOTSUP", errno.EINVAL),
+                getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+            }:
+                raise OSError(error_number, os.strerror(error_number))
+    elif sys.platform == "linux":
+        renameat2 = getattr(libc, "renameat2", None)
+        if renameat2 is not None:
+            renameat2.argtypes = [
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_int,
+                ctypes.c_char_p,
+                ctypes.c_uint,
+            ]
+            renameat2.restype = ctypes.c_int
+            result = renameat2(
+                -100,
+                source_bytes,
+                -100,
+                target_bytes,
+                0x00000001,  # RENAME_NOREPLACE
+            )
+            if result == 0:
+                return
+            error_number = ctypes.get_errno()
+            if error_number in {errno.EEXIST, errno.ENOTEMPTY}:
+                raise FileExistsError(error_number, os.strerror(error_number), target)
+            if error_number not in {
+                errno.EINVAL,
+                errno.ENOSYS,
+                getattr(errno, "ENOTSUP", errno.EINVAL),
+                getattr(errno, "EOPNOTSUPP", errno.EINVAL),
+            }:
+                raise OSError(error_number, os.strerror(error_number))
+    elif os.name == "nt":
+        os.rename(source, target)
+        return
+
+    # Reserve the absent name atomically on platforms without no-replace rename.
+    target.mkdir()
+    placeholder_identity = _path_identity(target)
+    try:
+        if _path_identity(target) != placeholder_identity:
+            raise FileExistsError(f"target changed while reserving '{target}'")
+        os.replace(source, target)
+    except BaseException:
+        if _path_identity(target) == placeholder_identity:
+            with suppress(OSError):
+                target.rmdir()
+        raise
+
+
 def _publish_journal_path(target: Path) -> Path:
     """Return the durable recovery journal path for a target."""
     return target.parent / f".{target.name}.pull-transaction.json"
@@ -472,17 +543,8 @@ def _remove_publish_journal(target: Path) -> None:
     try:
         journal_path.unlink()
     except FileNotFoundError:
-        pass
-    except OSError as exc:
-        _err.print(
-            f"[yellow]Warning:[/yellow] could not remove recovery journal '{journal_path}': {exc}"
-        )
-    try:
-        _sync_directory(target.parent)
-    except OSError as exc:
-        _err.print(
-            f"[yellow]Warning:[/yellow] could not sync journal removal in '{target.parent}': {exc}"
-        )
+        return
+    _sync_directory(target.parent)
     if token is not None:
         _ACTIVE_PUBLISH_TOKENS.discard(token)
 
@@ -499,6 +561,28 @@ def _release_current_publish_ownership(target: Path) -> None:
         and isinstance(payload.get("owner_token"), str)
     ):
         _ACTIVE_PUBLISH_TOKENS.discard(payload["owner_token"])
+
+
+def _staging_is_recovery_data(target: Path, staging_path: Path) -> bool:
+    """Return whether a failed transaction still needs the staging directory."""
+    try:
+        payload = json.loads(_publish_journal_path(target).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False
+    except (json.JSONDecodeError, OSError):
+        return True
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 2
+        or payload.get("target") != target.name
+        or payload.get("staging") != staging_path.name
+    ):
+        return True
+    try:
+        target_identity = _payload_identity(payload, "target_identity")
+    except RuntimeError:
+        return True
+    return target_identity is not None and _path_identity(staging_path) == target_identity
 
 
 def _journal_sibling(
@@ -606,6 +690,7 @@ def _recover_interrupted_publish(target: Path) -> None:
                 f"pull recovery found an unexpected backup directory '{backup_path}'"
             )
         _remove_tree(backup_path)
+    _sync_directory(target.parent)
     _remove_publish_journal(target)
 
 
@@ -620,7 +705,14 @@ def _publish_staged_pull(
         assert expected_snapshot is None or isinstance(expected_snapshot, dict)
         _assert_target_unchanged(target, expected_snapshot)
     if not target.exists() and not target.is_symlink():
-        os.replace(staging_path, target)
+        try:
+            _rename_directory_noreplace(staging_path, target)
+        except FileExistsError as exc:
+            raise RuntimeError(
+                f"Target directory '{target}' appeared while the pull was staging; "
+                "the intervening target was preserved."
+            ) from exc
+        _sync_directory(target.parent)
         return
 
     backup_path = _temporary_sibling(target, "pull-backup")
@@ -676,7 +768,16 @@ def _publish_staged_pull(
         _remove_publish_journal(target)
         raise
     os.replace(target, backup_path)
-    _sync_directory(target.parent)
+    try:
+        _sync_directory(target.parent)
+    except BaseException:
+        try:
+            os.replace(backup_path, target)
+            _sync_directory(target.parent)
+            _remove_publish_journal(target)
+        except OSError:
+            pass
+        raise
     if expected_snapshot is not _SNAPSHOT_UNSET:
         try:
             assert expected_snapshot is None or isinstance(expected_snapshot, dict)
@@ -728,18 +829,19 @@ def flatten_tree(
         Flat list of dicts with: id, title, icon, parent_id
     """
     result: list[dict[str, Any]] = []
-    for page in pages:
+    stack = [(page, parent_id) for page in reversed(pages)]
+    while stack:
+        page, current_parent_id = stack.pop()
         result.append(
             {
                 "id": page["id"],
                 "title": page.get("title", ""),
                 "icon": page.get("icon") or "",
-                "parent_id": parent_id,
+                "parent_id": current_parent_id,
             }
         )
         children = page.get("children", [])
-        if children:
-            result.extend(flatten_tree(children, parent_id=page["id"]))
+        stack.extend((child, page["id"]) for child in reversed(children))
     return result
 
 
@@ -933,13 +1035,19 @@ def pull_space(
     finally:
         _release_current_publish_ownership(target_path)
         if not published and (staging_path.exists() or staging_path.is_symlink()):
-            try:
-                _remove_tree(staging_path)
-            except OSError as exc:
+            if _staging_is_recovery_data(target_path, staging_path):
                 _err.print(
-                    f"[yellow]Warning:[/yellow] could not remove staging directory "
-                    f"'{staging_path}': {exc}"
+                    f"[yellow]Warning:[/yellow] preserving previous snapshot "
+                    f"'{staging_path}' for pull recovery"
                 )
+            else:
+                try:
+                    _remove_tree(staging_path)
+                except OSError as exc:
+                    _err.print(
+                        f"[yellow]Warning:[/yellow] could not remove staging directory "
+                        f"'{staging_path}': {exc}"
+                    )
 
     _err.print(
         f"Pulled {total} pages and {len(assets)} attachments from '{space_slug}' -> {dir_path}"

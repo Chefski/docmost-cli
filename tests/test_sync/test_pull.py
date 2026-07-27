@@ -28,7 +28,9 @@ from docmost_cli.sync.pull import (
     _publish_journal_path,
     _publish_staged_pull,
     _recover_interrupted_publish,
+    _remove_publish_journal,
     _snapshot_target,
+    _staging_is_recovery_data,
     _sync_directory,
     _temporary_sibling,
     _write_publish_journal,
@@ -114,6 +116,27 @@ class TestFlattenTreeNested:
         assert ("child-1", "root") in ids_and_parents
         assert ("child-2", "root") in ids_and_parents
         assert ("grandchild", "child-1") in ids_and_parents
+
+    def test_deep_tree_does_not_hit_recursion_limit(self) -> None:
+        root: dict[str, object] = {
+            "id": "page-0",
+            "title": "Page 0",
+            "children": [],
+        }
+        current = root
+        for level in range(1, 1101):
+            child: dict[str, object] = {
+                "id": f"page-{level}",
+                "title": f"Page {level}",
+                "children": [],
+            }
+            current["children"] = [child]
+            current = child
+
+        result = flatten_tree([root])
+
+        assert len(result) == 1101
+        assert result[-1]["id"] == "page-1100"
 
 
 class TestFlattenTreeEmpty:
@@ -759,6 +782,54 @@ class TestPullAtomicPublication:
         _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
         _recover_interrupted_publish(target)
 
+    def test_journal_unlink_failure_is_not_reported_as_success(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        staging = _temporary_sibling(target, "pull-staging")
+        backup = _temporary_sibling(target, "pull-backup")
+        journal = _write_publish_journal(target, staging, backup)
+        journal_path = _publish_journal_path(target)
+        real_unlink = Path.unlink
+
+        def fail_journal_unlink(path: Path, *, missing_ok: bool = False) -> None:
+            if path == journal_path:
+                raise PermissionError("simulated journal unlink failure")
+            real_unlink(path, missing_ok=missing_ok)
+
+        monkeypatch.setattr(Path, "unlink", fail_journal_unlink)
+        with pytest.raises(PermissionError, match="simulated journal unlink failure"):
+            _remove_publish_journal(target)
+
+        assert journal_path.exists()
+        _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
+
+    def test_failed_exchange_rollback_preserves_old_staging_for_recovery(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        backup = _temporary_sibling(target, "pull-backup")
+        journal = _write_publish_journal(target, staging, backup)
+        if not _atomic_exchange_directories(staging, target):
+            _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
+            pytest.skip("atomic directory exchange is not available on this filesystem")
+        _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
+
+        assert _staging_is_recovery_data(target, staging)
+        assert (staging / "old.txt").read_text(encoding="utf-8") == "old"
+
+        _recover_interrupted_publish(target)
+        assert (target / "new.txt").read_text(encoding="utf-8") == "new"
+        assert not staging.exists()
+
     def test_recovery_preserves_backup_when_target_was_recreated(
         self,
         tmp_path: Path,
@@ -838,6 +909,68 @@ class TestPullAtomicPublication:
 
         assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "old"
         assert journal_path.exists()
+
+    def test_fsync_failure_after_moving_target_rolls_back_immediately(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_sync_directory = _sync_directory
+        sync_count = 0
+
+        def fail_first_rename_sync(path: Path) -> None:
+            nonlocal sync_count
+            sync_count += 1
+            if sync_count == 2:
+                raise OSError("simulated first rename fsync failure")
+            real_sync_directory(path)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            lambda _left, _right: False,
+        )
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._sync_directory",
+            fail_first_rename_sync,
+        )
+
+        with pytest.raises(OSError, match="simulated first rename fsync failure"):
+            _publish_staged_pull(staging, target)
+
+        assert (target / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
+        assert not list(tmp_path.glob(".test.pull-backup-*"))
+        assert not _publish_journal_path(target).exists()
+
+    def test_initial_target_appearance_is_not_replaced(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+
+        def target_appeared(_source: Path, destination: Path) -> None:
+            destination.mkdir()
+            (destination / "intervening.txt").write_text("keep", encoding="utf-8")
+            raise FileExistsError(destination)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._rename_directory_noreplace",
+            target_appeared,
+        )
+
+        with pytest.raises(RuntimeError, match="appeared while"):
+            _publish_staged_pull(staging, target, expected_snapshot=None)
+
+        assert (target / "intervening.txt").read_text(encoding="utf-8") == "keep"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
 
 
 class TestPullManagedCleanup:
