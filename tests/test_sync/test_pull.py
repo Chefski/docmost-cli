@@ -354,6 +354,57 @@ class TestPullCreatesFiles:
             "conversion:local-fallback"
         ]
 
+    def test_canonical_markdown_without_revision_uses_local_fallback(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Fallback Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": "p1",
+                "title": "Fallback Page",
+                "icon": "",
+                "parentPageId": None,
+                "spaceId": "space-1",
+                "updatedAt": "revision-1",
+                "content": _PM_DOC,
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": "p1",
+                "title": "Fallback Page",
+                "content": "Unverified canonical output\n",
+            },
+        )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        page_text = next(target.glob("*.md")).read_text(encoding="utf-8")
+        assert page_text.endswith("Hello world\n")
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert (
+            "conversion:local-fallback"
+            in manifest["pages"]["p1"]["rich_content"]["unsafe_features"]
+        )
+
     def test_stable_unversioned_split_content_uses_local_conversion(
         self,
         httpx_mock,

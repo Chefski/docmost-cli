@@ -104,6 +104,11 @@ def fetch_server_page(
             f"Could not verify the remote revision for page {page_id}: "
             f"the server response did not contain page state. {failure_suffix}"
         )
+    if raw_data.get("content") is not None and not isinstance(raw_data.get("content"), dict):
+        print_error(
+            f"Could not verify the remote revision for page {page_id}: "
+            f"the server response contained invalid page content. {failure_suffix}"
+        )
     data = {**raw_data, _REVISION_MODE_KEY: "atomic"}
 
     # Older Docmost releases may expose content separately from page metadata.
@@ -136,13 +141,23 @@ def fetch_server_page(
         content_data = (
             content_result.get("data", content_result) if isinstance(content_result, dict) else {}
         )
-        if not isinstance(content_data, dict) or "content" not in content_data:
+        if (
+            not isinstance(content_data, dict)
+            or "content" not in content_data
+            or (
+                content_data.get("content") is not None
+                and not isinstance(content_data.get("content"), dict)
+            )
+        ):
             print_error(
                 f"Could not verify the remote revision for page {page_id}: "
                 f"the server response did not contain page content. {failure_suffix}"
             )
-        content_page_id = content_data.get("id") or content_data.get("pageId")
-        if content_page_id is not None and content_page_id != page_id:
+        content_page_ids = (content_data.get("id"), content_data.get("pageId"))
+        if any(
+            content_page_id is not None and content_page_id != page_id
+            for content_page_id in content_page_ids
+        ):
             print_error(
                 f"Could not verify the remote revision for page {page_id}: "
                 f"the server returned content for a different page. {failure_suffix}"

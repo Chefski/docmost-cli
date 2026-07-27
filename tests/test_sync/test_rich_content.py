@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
 from docmost_cli.sync.diff import ChangeType, PageChange, SyncDiff
 from docmost_cli.sync.rich_content import (
+    PageRevisionChangedError,
     analyze_prosemirror,
     build_pulled_rich_content_state,
     fetch_canonical_markdown,
@@ -317,6 +320,53 @@ def test_fetches_server_canonical_markdown(httpx_mock) -> None:
     assert markdown == "# Canonical\n"
     request = httpx_mock.get_requests()[0]
     assert json.loads(request.content) == {"pageId": "page-1", "format": "markdown"}
+
+
+def test_canonical_markdown_rejects_any_mismatched_page_identifier(httpx_mock) -> None:
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        json={
+            "data": {
+                "id": "page-1",
+                "pageId": "different-page",
+                "updatedAt": "revision-1",
+                "content": "# Wrong page\n",
+            }
+        },
+    )
+
+    with _make_client() as client, pytest.raises(PageRevisionChangedError):
+        fetch_canonical_markdown(
+            client,
+            "page-1",
+            expected_updated_at="revision-1",
+        )
+
+
+@pytest.mark.parametrize("updated_at", [None, "", "   "])
+def test_canonical_markdown_without_usable_revision_is_unavailable(
+    httpx_mock,
+    updated_at: str | None,
+) -> None:
+    data = {
+        "id": "page-1",
+        "content": "# Unverified\n",
+    }
+    if updated_at is not None:
+        data["updatedAt"] = updated_at
+    httpx_mock.add_response(
+        url=f"{_TEST_URL}/api/pages/info",
+        json={"data": data},
+    )
+
+    with _make_client() as client:
+        markdown = fetch_canonical_markdown(
+            client,
+            "page-1",
+            expected_updated_at="revision-1",
+        )
+
+    assert markdown is None
 
 
 def test_canonical_markdown_retries_transient_failures(httpx_mock, monkeypatch) -> None:

@@ -178,6 +178,34 @@ class TestVerifyRemoteRevisions:
 
         assert "did not contain page state" in " ".join(capsys.readouterr().err.split())
 
+    def test_malformed_non_null_atomic_content_aborts(
+        self,
+        httpx_mock,
+        capsys,
+    ) -> None:
+        _mock_page(httpx_mock, _server_page(content="not-prosemirror"))
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(_server_page()))],
+            )
+
+        assert "invalid page content" in " ".join(capsys.readouterr().err.split())
+
+    def test_null_atomic_content_is_a_valid_empty_page(self, httpx_mock) -> None:
+        page = _server_page(content=None)
+        _mock_page(httpx_mock, page)
+
+        with _make_client() as client:
+            result = verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert result.conflicts == []
+        assert result.pages[_PAGE_ID]["content"] is None
+
     def test_conflict_details_preserve_titles_with_rich_markup(self, httpx_mock, capsys) -> None:
         pulled = _server_page()
         _mock_page(httpx_mock, _server_page(title="Changed remotely"))
@@ -257,6 +285,30 @@ class TestVerifyRemoteRevisions:
 
         assert result.conflicts == []
         assert result.pages[_PAGE_ID]["content"] == page["content"]
+
+    def test_each_legacy_content_page_identifier_must_match(self, httpx_mock, capsys) -> None:
+        page = _server_page()
+        page_without_content = {key: value for key, value in page.items() if key != "content"}
+        _mock_page(httpx_mock, page_without_content)
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/content",
+            json={
+                "data": {
+                    "id": _PAGE_ID,
+                    "pageId": "different-page",
+                    "content": page["content"],
+                    "updatedAt": page["updatedAt"],
+                }
+            },
+        )
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            verify_remote_revisions(
+                client,
+                [_change(build_server_revision(page))],
+            )
+
+        assert "content for a different page" in " ".join(capsys.readouterr().err.split())
 
     def test_stable_unversioned_legacy_content_forms_a_safe_baseline(
         self,
