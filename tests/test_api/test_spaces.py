@@ -1,5 +1,7 @@
 """Tests for Space API methods."""
 
+import json
+
 import pytest
 
 from docmost_cli.api.client import DocmostClient
@@ -92,6 +94,130 @@ class TestCreateSpace:
         with DocmostClient(api_key_settings) as client:
             result = create_space(client, name="Test", slug="test")
         assert result["id"] == "new-space"
+
+    def test_generates_required_slug_when_omitted(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "new-space", "name": "Release Notes"},
+        )
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="Release Notes")
+
+        request = httpx_mock.get_requests()[0]
+        body = json.loads(request.content)
+        assert body["name"] == "Release Notes"
+        assert body["slug"].startswith("release-notes-")
+        assert len(body["slug"]) <= 100
+
+    def test_preserves_safe_canonical_name_as_generated_slug(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "new-space"},
+        )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="release-notes")
+
+        request = httpx_mock.get_requests()[0]
+        assert json.loads(request.content)["slug"] == "release-notes"
+
+    def test_lossy_normalization_retains_name_uniqueness(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        for resource_id in (
+            "space-team-a",
+            "space-team-hyphen",
+            "space-amp",
+            "space-space",
+            "space-canonical",
+        ):
+            httpx_mock.add_response(
+                url="https://docs.example.com/api/spaces/create",
+                json={"id": resource_id},
+            )
+
+        with DocmostClient(api_key_settings) as client:
+            for name in ("Team A", "Team-A", "A&B", "A B", "team-a"):
+                create_space(client, name=name)
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert len(set(slugs)) == 5
+        assert slugs[0].startswith("team-a-")
+        assert slugs[1].startswith("team-a-")
+        assert slugs[2].startswith("a-b-")
+        assert slugs[3].startswith("a-b-")
+        assert slugs[4] == "team-a"
+
+    def test_generates_distinct_slugs_for_non_ascii_names(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "space-ja"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/spaces/create",
+            json={"id": "space-ar"},
+        )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="日本語")
+            create_space(client, name="العربية")
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert slugs[0].startswith("space-")
+        assert slugs[1].startswith("space-")
+        assert slugs[0] != slugs[1]
+
+    def test_generated_slugs_remain_valid_and_distinct_after_truncation(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        for resource_id in ("space-a", "space-a-name", "space-long"):
+            httpx_mock.add_response(
+                url="https://docs.example.com/api/spaces/create",
+                json={"id": resource_id},
+            )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="a")
+            create_space(client, name="a-space")
+            create_space(client, name="a" + "-" * 99 + "ignored")
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert len(set(slugs)) == 3
+        assert all(2 <= len(slug) <= 100 for slug in slugs)
+        assert slugs[0].startswith("a-")
+        assert slugs[1] == "a-space"
+        assert slugs[2].startswith("a-")
+
+    def test_truncated_slugs_retain_name_uniqueness(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        for resource_id in ("space-long-a", "space-long-b"):
+            httpx_mock.add_response(
+                url="https://docs.example.com/api/spaces/create",
+                json={"id": resource_id},
+            )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="a" * 100)
+            create_space(client, name="a" * 100 + "b")
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert len(set(slugs)) == 2
+        assert all(2 <= len(slug) <= 100 for slug in slugs)
 
 
 class TestUpdateSpace:
