@@ -93,6 +93,12 @@ def pull_space(
         sanitize_filename,
         save_manifest,
     )
+    from docmost_cli.sync.rich_content import (
+        PageRevisionChangedError,
+        build_pulled_rich_content_state,
+        fetch_canonical_markdown,
+        rewrite_attachment_urls,
+    )
 
     # 1. Resolve space
     space_id = resolve_space_id(client, space_slug)
@@ -127,14 +133,40 @@ def pull_space(
     # 5. Fetch content and write files
     page_entries: list[dict[str, Any]] = []
     assets: dict[str, dict[str, Any]] = {}
+    protected_pages = 0
     for i, page_info in enumerate(flat_pages, 1):
         page_id = page_info["id"]
         title = page_info["title"]
         _err.print(f"Pulling {i}/{total}: {title}")
 
-        # Fetch content
-        content_data = get_page_content(client, page_id)
-        pm_content = content_data.get("content")
+        # Keep the raw recovery snapshot and canonical Markdown on the same
+        # page revision. A concurrent editor can otherwise make the guard
+        # describe different content from the Markdown written to disk.
+        for revision_attempt in range(3):
+            content_data = get_page_content(client, page_id)
+            pm_content = content_data.get("content")
+            updated_at = content_data.get("updatedAt")
+            expected_updated_at = updated_at if isinstance(updated_at, str) else None
+            try:
+                canonical_markdown = fetch_canonical_markdown(
+                    client,
+                    page_id,
+                    expected_updated_at=expected_updated_at,
+                )
+            except PageRevisionChangedError:
+                if revision_attempt == 2:
+                    print_error(
+                        f"Page '{title}' changed repeatedly during pull. "
+                        "Wait for edits to finish and retry."
+                    )
+                _err.print(f"  [yellow]Page '{title}' changed during pull; retrying.[/yellow]")
+                continue
+            break
+
+        rich_content = build_pulled_rich_content_state(dir_path, page_id, pm_content)
+        if expected_updated_at is None:
+            rich_content["unsafe_features"].append("conversion:unverified-revision")
+            rich_content["unsafe_features"].sort()
 
         attachment_ids = collect_attachment_ids(pm_content)
         attachment_paths: dict[str, str] = {}
@@ -157,9 +189,33 @@ def pull_space(
                 str(assets[attachment_id]["path"])
             )
 
-        markdown = (
-            convert_to_markdown(pm_content, attachment_paths=attachment_paths) if pm_content else ""
-        )
+        if canonical_markdown is None:
+            unsafe_features = rich_content["unsafe_features"]
+            if "conversion:local-fallback" not in unsafe_features:
+                unsafe_features.append("conversion:local-fallback")
+                unsafe_features.sort()
+            _err.print(
+                f"  [yellow]Server Markdown conversion unavailable for '{title}'; "
+                "using the local converter.[/yellow]"
+            )
+            markdown = (
+                convert_to_markdown(pm_content, attachment_paths=attachment_paths)
+                if pm_content
+                else ""
+            )
+        else:
+            markdown = rewrite_attachment_urls(
+                canonical_markdown,
+                attachment_paths,
+                docmost_origin=client.api_url("/"),
+            )
+
+        unsafe_features = rich_content["unsafe_features"]
+        if unsafe_features:
+            protected_pages += 1
+            _err.print(
+                f"  [yellow]Protected rich content:[/yellow] {title} ({', '.join(unsafe_features)})"
+            )
 
         # Generate filename and write file
         filename = sanitize_filename(title, page_id)
@@ -180,6 +236,7 @@ def pull_space(
             icon=page_info["icon"],
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            rich_content=rich_content,
         )
         page_entries.append({"id": page_id, **entry})
 
@@ -190,6 +247,12 @@ def pull_space(
     _err.print(
         f"Pulled {total} pages and {len(assets)} attachments from '{space_slug}' -> {dir_path}"
     )
+    if protected_pages:
+        _err.print(
+            f"[yellow]{protected_pages} page(s) contain rich content that Markdown cannot "
+            "round-trip. Their Markdown may be read locally, but content pushes are blocked; "
+            "title, icon, and parent changes remain safe.[/yellow]"
+        )
     return PullResult(
         pages_pulled=total,
         dir_path=dir_path,
