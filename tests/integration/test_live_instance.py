@@ -226,7 +226,6 @@ def test_safe_page_comment_attachment_and_sync_primitives(
     assert attachment_bytes == upload_path.read_bytes()
 
     delete_page(integration_client, child_id)
-    created_resources.page_ids.remove(child_id)
 
 
 def test_safe_cross_space_copy_and_move(
