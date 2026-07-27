@@ -97,6 +97,8 @@ def analyze_prosemirror(content: object) -> tuple[str, ...]:
     regenerates those IDs when it imports Markdown. The guard focuses on
     author-visible structure, formatting, embedded content, and references.
     """
+    if content is None:
+        return ()
     if not isinstance(content, dict):
         return ("content:invalid-prosemirror",)
 
@@ -403,11 +405,20 @@ def _markdown_code_ranges(markdown: str) -> list[tuple[int, int]]:
         fenced.append((start, end))
         line_index = end_index
 
-    protected = list(fenced)
+    indented: list[tuple[int, int]] = []
+    for index, line in enumerate(lines):
+        start = offsets[index]
+        if any(fence_start <= start < fence_end for fence_start, fence_end in fenced):
+            continue
+        if line.startswith("    ") or line.startswith("\t"):
+            indented.append((start, start + len(line)))
+
+    blocks = sorted([*fenced, *indented])
+    protected = list(blocks)
     gap_start = 0
-    for fence_start, fence_end in [*fenced, (len(markdown), len(markdown))]:
-        protected.extend(_inline_code_ranges(markdown, gap_start, fence_start))
-        gap_start = fence_end
+    for block_start, block_end in [*blocks, (len(markdown), len(markdown))]:
+        protected.extend(_inline_code_ranges(markdown, gap_start, block_start))
+        gap_start = max(gap_start, block_end)
     return sorted(protected)
 
 

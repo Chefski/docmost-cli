@@ -111,6 +111,12 @@ def push_space(
             "Title, icon, and parent-only changes remain safe."
         )
 
+    # Recheck every guarded replacement before Phase A so a later conflict
+    # cannot leave earlier creates or updates partially applied.
+    for change in diff.modified:
+        if change.changes & {ChangeType.CONTENT_CHANGED, ChangeType.ATTACHMENT_CHANGED}:
+            _ensure_current_rich_content_is_safe(client, change)
+
     # --- Execute changes ---
 
     id_remap: dict[str, str] = {}  # old_id -> new_id

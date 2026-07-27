@@ -581,6 +581,22 @@ class TestPushContentUpdate:
             },
         )
         httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": FAKE_PAGE_ID,
+                "title": "My Page",
+                "content": {
+                    "type": "doc",
+                    "content": [
+                        {
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": old_body.strip()}],
+                        }
+                    ],
+                },
+            },
+        )
+        httpx_mock.add_response(
             url=f"{_TEST_URL}/api/pages/update",
             json={"data": {"id": FAKE_PAGE_ID}},
         )

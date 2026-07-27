@@ -36,6 +36,10 @@ def test_supported_docmost_nodes_are_markdown_safe() -> None:
     assert analyze_prosemirror(content) == ()
 
 
+def test_null_content_is_a_safe_empty_page() -> None:
+    assert analyze_prosemirror(None) == ()
+
+
 def test_supported_round_trip_remains_pushable(tmp_path: Path) -> None:
     content = _load_fixture("supported_rich_content.json")
     state = build_pulled_rich_content_state(tmp_path, "safe-page", content)
@@ -374,6 +378,7 @@ def test_does_not_rewrite_attachment_links_inside_code() -> None:
         "~~~markdown\n"
         "[PDF](/api/files/pdf-id/file.pdf)\n"
         "~~~\n"
+        "    [Indented](/api/files/pdf-id/file.pdf)\n"
     )
 
     rewritten = rewrite_attachment_urls(
@@ -387,6 +392,7 @@ def test_does_not_rewrite_attachment_links_inside_code() -> None:
     assert "Outside: ![diagram](files/image-id/diagram.png)" in rewritten
     assert "Inline: `![diagram](/api/files/image-id/diagram.png)`" in rewritten
     assert "~~~markdown\n[PDF](/api/files/pdf-id/file.pdf)\n~~~" in rewritten
+    assert "    [Indented](/api/files/pdf-id/file.pdf)" in rewritten
 
 
 def test_rewrites_attachment_with_escaped_and_nested_label() -> None:

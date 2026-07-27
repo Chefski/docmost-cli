@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 MANIFEST_FILENAME = ".docmost-manifest.json"
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3
 
 _UNSAFE_CHARS_RE = re.compile(r'[/\\:*?"<>|]')
 _MULTI_DASH_RE = re.compile(r"-{2,}")
