@@ -130,6 +130,7 @@ def _local_destination(
         if destination.startswith("<") and destination.endswith(">")
         else destination
     )
+    raw = re.sub(r"\\([!\"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])", r"\1", raw)
     parsed = urlsplit(raw)
     if parsed.scheme or parsed.netloc or raw.startswith(("#", "/")):
         return None

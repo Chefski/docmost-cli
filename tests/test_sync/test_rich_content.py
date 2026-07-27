@@ -363,6 +363,7 @@ def test_rewrites_canonical_attachment_urls_to_local_paths() -> None:
             "image-id": "files/image-id/diagram.png",
             "pdf-id": "files/pdf-id/file.pdf",
         },
+        docmost_origin=_TEST_URL,
     )
 
     assert "![Diagram](files/image-id/diagram.png)" in rewritten
@@ -393,6 +394,18 @@ def test_does_not_rewrite_attachment_links_inside_code() -> None:
     assert "Inline: `![diagram](/api/files/image-id/diagram.png)`" in rewritten
     assert "~~~markdown\n[PDF](/api/files/pdf-id/file.pdf)\n~~~" in rewritten
     assert "    [Indented](/api/files/pdf-id/file.pdf)" in rewritten
+
+
+def test_does_not_rewrite_attachment_urls_from_another_origin() -> None:
+    markdown = "[External](https://other.example/api/files/pdf-id/file.pdf)\n"
+
+    rewritten = rewrite_attachment_urls(
+        markdown,
+        {"pdf-id": "files/pdf-id/file.pdf"},
+        docmost_origin=_TEST_URL,
+    )
+
+    assert rewritten == markdown
 
 
 def test_rewrites_attachment_with_escaped_and_nested_label() -> None:

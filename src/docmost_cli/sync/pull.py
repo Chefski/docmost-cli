@@ -204,7 +204,11 @@ def pull_space(
                 else ""
             )
         else:
-            markdown = rewrite_attachment_urls(canonical_markdown, attachment_paths)
+            markdown = rewrite_attachment_urls(
+                canonical_markdown,
+                attachment_paths,
+                docmost_origin=client.api_url("/"),
+            )
 
         unsafe_features = rich_content["unsafe_features"]
         if unsafe_features:

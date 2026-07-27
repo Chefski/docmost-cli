@@ -244,8 +244,12 @@ class ProseMirrorConverter:
         return self._walk_children(node)
 
     def _node_mathBlock(self, node: dict[str, Any]) -> str:
-        content = self._render_inline(node.get("content", []))
+        content = node.get("attrs", {}).get("text") or self._render_inline(node.get("content", []))
         return f"$$\n{content.strip()}\n$$\n\n"
+
+    def _node_mathInline(self, node: dict[str, Any]) -> str:
+        content = node.get("attrs", {}).get("text") or self._render_inline(node.get("content", []))
+        return f"${content}$"
 
     def _node_embed(self, node: dict[str, Any]) -> str:
         src = node.get("attrs", {}).get("src", "")

@@ -14,7 +14,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -184,7 +184,12 @@ def fetch_canonical_markdown(
     return markdown if isinstance(markdown, str) else None
 
 
-def rewrite_attachment_urls(markdown: str, attachment_paths: Mapping[str, str]) -> str:
+def rewrite_attachment_urls(
+    markdown: str,
+    attachment_paths: Mapping[str, str],
+    *,
+    docmost_origin: str | None = None,
+) -> str:
     """Rewrite Markdown attachment destinations outside literal code contexts."""
 
     def replace_destination(match: re.Match[str]) -> str:
@@ -197,6 +202,16 @@ def rewrite_attachment_urls(markdown: str, attachment_paths: Mapping[str, str]) 
         server_match = _SERVER_ATTACHMENT_URL_RE.fullmatch(destination)
         if server_match is None:
             return match.group(0)
+        parsed_destination = urlsplit(destination)
+        if parsed_destination.netloc:
+            if docmost_origin is None:
+                return match.group(0)
+            parsed_origin = urlsplit(docmost_origin)
+            if (
+                parsed_destination.scheme.lower(),
+                parsed_destination.netloc.lower(),
+            ) != (parsed_origin.scheme.lower(), parsed_origin.netloc.lower()):
+                return match.group(0)
         decoded_id = unquote(server_match.group("attachment_id"))
         local_path = attachment_paths.get(decoded_id)
         if local_path is None:

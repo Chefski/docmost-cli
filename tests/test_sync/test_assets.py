@@ -76,6 +76,16 @@ def test_discover_local_assets_handles_escaped_and_nested_labels(tmp_path: Path)
     assert references[0].label == r"Before \] [nested]"
 
 
+def test_discover_local_assets_decodes_escaped_destination(tmp_path: Path) -> None:
+    asset = tmp_path / "files" / "report(final).pdf"
+    asset.parent.mkdir(parents=True)
+    asset.write_bytes(b"pdf")
+
+    references = discover_local_assets(r"[Report](files/report\(final\).pdf)", tmp_path)
+
+    assert references[0].absolute_path == asset
+
+
 def test_prepare_new_image_uploads_and_embeds_stable_id(
     httpx_mock,
     tmp_path: Path,

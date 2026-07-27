@@ -12,7 +12,7 @@ print("safe")
 
 > **info**: Safe callout
 
-
+$x^2$
 
 | Header |
 |---|
