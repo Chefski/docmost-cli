@@ -86,6 +86,7 @@ def pull_space(
     )
     from docmost_cli.sync.conflicts import (
         fetch_server_page,
+        get_server_revision_token,
         server_page_can_use_canonical_revision,
         server_page_revision_is_verified,
     )
@@ -163,8 +164,7 @@ def pull_space(
             server_page = fetched_page
             revision_verified = server_page_revision_is_verified(server_page)
             pm_content = server_page.get("content")
-            updated_at = server_page.get("updatedAt")
-            expected_updated_at = updated_at if isinstance(updated_at, str) else None
+            expected_updated_at = get_server_revision_token(server_page.get("updatedAt"))
             if server_page_can_use_canonical_revision(server_page):
                 try:
                     canonical_markdown = fetch_canonical_markdown(

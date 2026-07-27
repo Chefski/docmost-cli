@@ -21,6 +21,7 @@ __all__ = [
     "fetch_server_attachment",
     "fetch_server_page",
     "format_reconciliation_guidance",
+    "get_server_revision_token",
     "server_page_can_use_canonical_revision",
     "server_page_revision_is_verified",
     "verify_remote_revisions",
@@ -28,6 +29,7 @@ __all__ = [
 
 _REVISION_ALLOWED_STATUSES = frozenset({404, 429, 500, 502, 503, 504})
 _REVISION_MODE_KEY = "_docmost_cli_revision_mode"
+_CANONICAL_REVISION_MODES = frozenset({"atomic", "token"})
 _VERIFIED_REVISION_MODES = frozenset({"atomic", "token", "stable"})
 
 
@@ -145,12 +147,10 @@ def fetch_server_page(
                 f"Could not verify the remote revision for page {page_id}: "
                 f"the server returned content for a different page. {failure_suffix}"
             )
-        metadata_updated_at = data.get("updatedAt")
-        content_updated_at = content_data.get("updatedAt")
+        metadata_updated_at = get_server_revision_token(data.get("updatedAt"))
+        content_updated_at = get_server_revision_token(content_data.get("updatedAt"))
         revision_token_matches = (
-            isinstance(metadata_updated_at, str)
-            and isinstance(content_updated_at, str)
-            and metadata_updated_at == content_updated_at
+            metadata_updated_at is not None and metadata_updated_at == content_updated_at
         )
         data = {
             **data,
@@ -183,6 +183,11 @@ def fetch_server_page(
     return data
 
 
+def get_server_revision_token(value: object) -> str | None:
+    """Return a non-blank server revision token, if one was provided."""
+    return value if isinstance(value, str) and value.strip() else None
+
+
 def server_page_revision_is_verified(page: dict[str, Any]) -> bool:
     """Return whether page metadata and content came from one verified revision."""
     return page.get(_REVISION_MODE_KEY) in _VERIFIED_REVISION_MODES
@@ -190,8 +195,8 @@ def server_page_revision_is_verified(page: dict[str, Any]) -> bool:
 
 def server_page_can_use_canonical_revision(page: dict[str, Any]) -> bool:
     """Return whether canonical Markdown can be tied to the accepted raw revision."""
-    return page.get(_REVISION_MODE_KEY) in {"atomic", "token"} and isinstance(
-        page.get("updatedAt"), str
+    return page.get(_REVISION_MODE_KEY) in _CANONICAL_REVISION_MODES and (
+        get_server_revision_token(page.get("updatedAt")) is not None
     )
 
 
