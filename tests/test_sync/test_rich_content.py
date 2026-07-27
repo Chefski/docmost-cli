@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
 from docmost_cli.sync.diff import ChangeType, PageChange, SyncDiff
@@ -293,6 +295,27 @@ def test_pull_state_preserves_exact_raw_snapshot(tmp_path: Path) -> None:
     assert json.loads(snapshot_path.read_text(encoding="utf-8")) == content
     assert state["snapshot_hash"].startswith("sha256:")
     assert "node:mention" in state["unsafe_features"]
+
+
+def test_pull_state_does_not_follow_predictable_temporary_symlink(tmp_path: Path) -> None:
+    raw_pages = tmp_path / ".docmost" / "raw-pages"
+    raw_pages.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must survive", encoding="utf-8")
+    predictable_temporary_path = raw_pages / "page-1.json.tmp"
+    try:
+        predictable_temporary_path.symlink_to(outside)
+    except OSError:
+        pytest.skip("file symlinks are unavailable")
+
+    state = build_pulled_rich_content_state(tmp_path, "page-1", {"type": "doc"})
+
+    assert outside.read_text(encoding="utf-8") == "must survive"
+    assert predictable_temporary_path.is_symlink()
+    assert json.loads((tmp_path / state["snapshot_path"]).read_text(encoding="utf-8")) == {
+        "type": "doc"
+    }
+    assert not list(raw_pages.glob(".page-1.json.*.tmp"))
 
 
 def test_fetches_server_canonical_markdown(httpx_mock) -> None:
