@@ -45,6 +45,7 @@ jobs:
           repository: docmost/docmost
           ref: ${{ steps.contract.outputs.ref }}
           path: .docmost-upstream
+          sparse-checkout-cone-mode: false
           sparse-checkout: |
             apps/client/src/features/page/services/page-service.ts
             apps/client/src/features/search
