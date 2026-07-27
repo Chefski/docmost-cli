@@ -426,14 +426,12 @@ def handler_multipart_fields(
     if not match:
         raise AssertionError(f"handler {handler_name} not found")
     body = _balanced_block(source, match.end())
-    fields = set(re.findall(r"file\.fields\?\.([A-Za-z_]\w*)", body))
-    required = set(re.findall(r"if\s*\(\s*!([A-Za-z_]\w*)\s*\)", body))
-    required.update(
-        re.findall(
-            r"if\s*\(\s*![A-Za-z_]\w*\.includes\(([A-Za-z_]\w*)\)",
-            body,
-        )
-    )
+    field_pattern = re.compile(r"file\.fields\?\.([A-Za-z_]\w*)")
+    fields = {match.group(1) for match in _code_matches(field_pattern, body)}
+    direct_required_pattern = re.compile(r"if\s*\(\s*!([A-Za-z_]\w*)\s*\)")
+    required = {match.group(1) for match in _code_matches(direct_required_pattern, body)}
+    membership_required_pattern = re.compile(r"if\s*\(\s*![A-Za-z_]\w*\.includes\(([A-Za-z_]\w*)\)")
+    required.update(match.group(1) for match in _code_matches(membership_required_pattern, body))
     return fields, required & fields
 
 

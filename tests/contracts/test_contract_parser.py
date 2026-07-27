@@ -345,3 +345,19 @@ export class ImportController {
         {"note", "source", "spaceId"},
         {"source", "spaceId"},
     )
+
+
+def test_multipart_handler_fields_ignore_commented_code() -> None:
+    source = """
+export class ImportController {
+  async importZip() {
+    // const pageId = file.fields?.pageId?.value;
+    // if (!pageId) throw new Error('pageId is required');
+    /*
+    const source = file.fields?.source?.value;
+    if (!validSources.includes(source)) throw new Error('source is required');
+    */
+  }
+}
+"""
+    assert handler_multipart_fields(source, "importZip") == (set(), set())

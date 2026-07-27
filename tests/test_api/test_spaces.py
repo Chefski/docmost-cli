@@ -155,6 +155,25 @@ class TestCreateSpace:
         assert slugs[1] == "a-space"
         assert slugs[2].startswith("a-")
 
+    def test_truncated_slugs_retain_name_uniqueness(
+        self,
+        httpx_mock,
+        api_key_settings,
+    ) -> None:
+        for resource_id in ("space-long-a", "space-long-b"):
+            httpx_mock.add_response(
+                url="https://docs.example.com/api/spaces/create",
+                json={"id": resource_id},
+            )
+
+        with DocmostClient(api_key_settings) as client:
+            create_space(client, name="a" * 100)
+            create_space(client, name="a" * 100 + "b")
+
+        slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
+        assert len(set(slugs)) == 2
+        assert all(2 <= len(slug) <= 100 for slug in slugs)
+
 
 class TestUpdateSpace:
     def test_updates_space(self, httpx_mock, api_key_settings) -> None:
