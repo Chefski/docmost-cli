@@ -130,22 +130,29 @@ class TestCreateSpace:
         httpx_mock,
         api_key_settings,
     ) -> None:
-        for resource_id in ("space-team-a", "space-team-hyphen", "space-amp", "space-space"):
+        for resource_id in (
+            "space-team-a",
+            "space-team-hyphen",
+            "space-amp",
+            "space-space",
+            "space-canonical",
+        ):
             httpx_mock.add_response(
                 url="https://docs.example.com/api/spaces/create",
                 json={"id": resource_id},
             )
 
         with DocmostClient(api_key_settings) as client:
-            for name in ("Team A", "Team-A", "A&B", "A B"):
+            for name in ("Team A", "Team-A", "A&B", "A B", "team-a"):
                 create_space(client, name=name)
 
         slugs = [json.loads(request.content)["slug"] for request in httpx_mock.get_requests()]
-        assert len(set(slugs)) == 4
+        assert len(set(slugs)) == 5
         assert slugs[0].startswith("team-a-")
-        assert slugs[1] == "team-a"
+        assert slugs[1].startswith("team-a-")
         assert slugs[2].startswith("a-b-")
         assert slugs[3].startswith("a-b-")
+        assert slugs[4] == "team-a"
 
     def test_generates_distinct_slugs_for_non_ascii_names(
         self,

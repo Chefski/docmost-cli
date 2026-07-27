@@ -23,7 +23,7 @@ def _slug_from_name(name: str) -> str:
     digest = hashlib.sha256(name.encode()).hexdigest()[:12]
     if not slug:
         return f"space-{digest}"
-    if len(slug) > 100 or slug != canonical_name:
+    if len(slug) > 100 or slug != name:
         prefix = slug[:87].rstrip("-_")
         slug = f"{prefix}-{digest}" if prefix else f"space-{digest}"
     else:
