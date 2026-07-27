@@ -18,6 +18,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote, unquote, urlsplit
 
+from docmost_cli.sync.conflicts import get_server_revision_token
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
 
@@ -181,8 +183,18 @@ def fetch_canonical_markdown(
     data = payload.get("data", payload) if isinstance(payload, dict) else None
     if not isinstance(data, dict):
         return None
-    if expected_updated_at is not None and data.get("updatedAt") != expected_updated_at:
+    page_ids = (data.get("id"), data.get("pageId"))
+    if any(
+        response_page_id is not None and response_page_id != page_id
+        for response_page_id in page_ids
+    ):
         raise PageRevisionChangedError(page_id)
+    if expected_updated_at is not None:
+        actual_updated_at = get_server_revision_token(data.get("updatedAt"))
+        if actual_updated_at is None:
+            return None
+        if actual_updated_at != expected_updated_at:
+            raise PageRevisionChangedError(page_id)
     markdown = data.get("content")
     return markdown if isinstance(markdown, str) else None
 

@@ -130,6 +130,27 @@ class TestMutationSafeRetries:
         assert len(requests) == 2
         assert requests[0].content == requests[1].content == b'{"pageId":"page-1"}'
 
+    def test_raw_safe_post_retries_and_returns_allowed_status(
+        self,
+        httpx_mock,
+        api_key_settings,
+        monkeypatch,
+    ) -> None:
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        url = "https://docs.example.com/api/pages/info"
+        httpx_mock.add_response(url=url, status_code=503)
+        httpx_mock.add_response(url=url, status_code=404)
+
+        with DocmostClient(api_key_settings) as client:
+            response = client.post_raw(
+                "/pages/info",
+                json={"pageId": "missing"},
+                retry_safe=True,
+                allowed_error_statuses=frozenset({404}),
+            )
+
+        assert response.status_code == 404
+
     def test_explicitly_safe_raw_post_retries_then_accepts_empty_response(
         self, httpx_mock, api_key_settings, monkeypatch
     ) -> None:
@@ -493,6 +514,35 @@ class TestAuthenticationReplay:
             assert b"page-1" in request.content
             assert b'filename="report.txt"' in request.content
             assert b"multipart contents" in request.content
+        assert requests[1].headers["Authorization"] == "Bearer new_jwt"
+
+    def test_session_auth_401_raw_response_still_honors_allowed_status(
+        self,
+        httpx_mock,
+        session_settings,
+        monkeypatch,
+        tmp_path,
+    ) -> None:
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+        url = "https://docs.example.com/api/pages/info"
+        httpx_mock.add_response(url=url, status_code=401)
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/auth/login",
+            json={"token": "new_jwt"},
+        )
+        httpx_mock.add_response(url=url, status_code=404)
+
+        with DocmostClient(session_settings) as client:
+            response = client.post_raw(
+                "/pages/info",
+                json={"pageId": "missing"},
+                retry_safe=True,
+                allowed_error_statuses=frozenset({404}),
+            )
+
+        requests = [request for request in httpx_mock.get_requests() if str(request.url) == url]
+        assert response.status_code == 404
+        assert len(requests) == 2
         assert requests[1].headers["Authorization"] == "Bearer new_jwt"
 
     def test_second_401_is_not_reauthenticated_again(

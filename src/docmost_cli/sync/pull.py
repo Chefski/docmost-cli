@@ -966,7 +966,7 @@ def pull_space(
         PullResult with count and path.
     """
     from docmost_cli.api.attachments import download_attachment
-    from docmost_cli.api.pages import build_page_tree, get_page_content
+    from docmost_cli.api.pages import build_page_tree
     from docmost_cli.api.spaces import resolve_space_id
     from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
     from docmost_cli.output.formatter import print_error
@@ -976,11 +976,18 @@ def pull_space(
         build_asset_entry,
         collect_attachment_ids,
     )
+    from docmost_cli.sync.conflicts import (
+        fetch_server_page,
+        get_server_revision_token,
+        server_page_can_use_canonical_revision,
+        server_page_revision_is_verified,
+    )
     from docmost_cli.sync.frontmatter import write_sync_file
     from docmost_cli.sync.manifest import (
         MANIFEST_FILENAME,
         build_manifest,
         build_page_entry,
+        build_server_revision,
         compute_content_hash,
         load_manifest,
         sanitize_filename,
@@ -1056,30 +1063,49 @@ def pull_space(
             title = page_info["title"]
             _err.print(f"Pulling {i}/{total}: {title}")
 
-            # Keep the raw recovery snapshot and canonical Markdown on the same
-            # page revision. A concurrent editor can otherwise make the guard
-            # describe different content from the Markdown written to disk.
+            # Keep the raw recovery snapshot, remote-conflict baseline, and
+            # canonical Markdown on the same verified page revision.
+            server_page: dict[str, Any] = {}
             for revision_attempt in range(3):
-                content_data = get_page_content(client, page_id)
-                pm_content = content_data.get("content")
-                updated_at = content_data.get("updatedAt")
-                expected_updated_at = updated_at if isinstance(updated_at, str) else None
-                try:
-                    canonical_markdown = fetch_canonical_markdown(
-                        client,
-                        page_id,
-                        expected_updated_at=expected_updated_at,
+                fetched_page = fetch_server_page(
+                    client,
+                    page_id,
+                    failure_suffix="The pull was not completed.",
+                )
+                if fetched_page is None:
+                    print_error(
+                        f"Page {page_id} disappeared while it was being pulled. "
+                        "The pull was not completed."
                     )
-                except PageRevisionChangedError:
-                    if revision_attempt == 2:
-                        print_error(
-                            f"Page '{title}' changed repeatedly during pull. "
-                            "Wait for edits to finish and retry."
+                assert fetched_page is not None
+                server_page = fetched_page
+                revision_verified = server_page_revision_is_verified(server_page)
+                pm_content = server_page.get("content")
+                expected_updated_at = get_server_revision_token(server_page.get("updatedAt"))
+                if server_page_can_use_canonical_revision(server_page):
+                    try:
+                        canonical_markdown = fetch_canonical_markdown(
+                            client,
+                            page_id,
+                            expected_updated_at=expected_updated_at,
                         )
-                    _err.print(f"  [yellow]Page '{title}' changed during pull; retrying.[/yellow]")
-                    continue
+                    except PageRevisionChangedError:
+                        if revision_attempt == 2:
+                            print_error(
+                                f"Page '{title}' changed repeatedly during pull. "
+                                "Wait for edits to finish and retry."
+                            )
+                        _err.print(
+                            f"  [yellow]Page '{title}' changed during pull; retrying.[/yellow]"
+                        )
+                        continue
+                else:
+                    canonical_markdown = None
                 break
 
+            title = str(server_page.get("title") or title)
+            parent_id = server_page.get("parentPageId", page_info["parent_id"])
+            icon = str(server_page.get("icon") or "")
             _ensure_managed_directory(
                 staging_path,
                 Path(".docmost") / "raw-pages",
@@ -1089,7 +1115,7 @@ def pull_space(
                 page_id,
                 pm_content,
             )
-            if expected_updated_at is None:
+            if expected_updated_at is None or not revision_verified:
                 rich_content["unsafe_features"].append("conversion:unverified-revision")
                 rich_content["unsafe_features"].sort()
 
@@ -1153,8 +1179,8 @@ def pull_space(
             metadata = {
                 "id": page_id,
                 "title": title,
-                "parent_id": page_info["parent_id"] or "",
-                "icon": page_info["icon"],
+                "parent_id": parent_id or "",
+                "icon": icon,
             }
             write_sync_file(destination, metadata, markdown)
 
@@ -1162,11 +1188,12 @@ def pull_space(
             entry = build_page_entry(
                 title=title,
                 filename=filename,
-                parent_id=page_info["parent_id"],
-                icon=page_info["icon"],
+                parent_id=parent_id,
+                icon=icon,
                 content_hash=content_hash,
                 attachment_ids=attachment_ids,
                 rich_content=rich_content,
+                server_revision=(build_server_revision(server_page) if revision_verified else None),
             )
             page_entries.append({"id": page_id, **entry})
 
