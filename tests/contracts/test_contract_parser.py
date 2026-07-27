@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 from scripts.check_docmost_contracts import (
     HandlerBinding,
     Route,
@@ -64,12 +65,32 @@ export class PageController {
     assert set(controller_bindings(source)) == expected
 
 
+def test_controller_binding_rejects_a_non_method_after_the_route() -> None:
+    source = """
+@Controller('pages')
+export class PageController {
+  @Post('/content')
+  contentHandler = createHandler();
+
+  async laterMethod() {}
+}
+"""
+    with pytest.raises(
+        AssertionError,
+        match="route is not immediately followed by a class method",
+    ):
+        controller_bindings(source)
+
+
 def test_dto_initializer_is_not_required() -> None:
     source = """
 export class ExampleDto {
-  enabled = true;
+    enabled = "}";
 
-  requiredValue: string;
+    // A comment containing } must not end the class.
+    requiredValue: {
+      nestedValue: string;
+    };
 }
 """
     assert class_fields(source, "ExampleDto") == (
@@ -138,6 +159,19 @@ export async function uploadImage(image: File) {
     ) == {"document", "spaceId"}
 
 
+def test_multipart_client_fields_require_a_declaration_in_the_same_function() -> None:
+    source = """
+const formData = new FormData();
+formData.append("unrelated", value);
+
+export async function importPage() {
+  return api.post("/pages/import", formData);
+}
+"""
+    with pytest.raises(AssertionError, match="has no FormData declaration"):
+        client_multipart_fields(source, Route("POST", "/pages/import"))
+
+
 def test_contract_check_rejects_a_renamed_multipart_file_field(tmp_path: Path) -> None:
     controller = tmp_path / "controller.ts"
     controller.write_text(
@@ -152,10 +186,12 @@ export class ImportController {
     client = tmp_path / "client.ts"
     client.write_text(
         """
-const formData = new FormData();
-formData.append("spaceId", spaceId);
-formData.append("document", file);
-api.post("/pages/import", formData);
+export async function importPage(file: File, spaceId: string) {
+  const formData = new FormData();
+  formData.append("spaceId", spaceId);
+  formData.append("document", file);
+  return api.post("/pages/import", formData);
+}
 """
     )
     contract = {

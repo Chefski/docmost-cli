@@ -64,23 +64,21 @@ def _route_decorator_paths(raw: str) -> list[str]:
     return [match.group(2) for match in matches]
 
 
-def _is_typescript_code_position(source: str, position: int) -> bool:
-    """Return whether a source offset is executable TypeScript, not text/comment."""
+def _typescript_code_mask(source: str) -> list[bool]:
+    """Mark offsets that are TypeScript code rather than strings or comments."""
+    mask = [False] * len(source)
     state = "code"
     index = 0
-    while index < position:
+    while index < len(source):
         current = source[index]
-        following = source[index + 1] if index + 1 < position else ""
+        following = source[index + 1] if index + 1 < len(source) else ""
         if state == "code":
+            mask[index] = True
             if current == "/" and following == "/":
                 state = "line-comment"
-                index += 2
-                continue
-            if current == "/" and following == "*":
+            elif current == "/" and following == "*":
                 state = "block-comment"
-                index += 2
-                continue
-            if current == "'":
+            elif current == "'":
                 state = "single-quote"
             elif current == '"':
                 state = "double-quote"
@@ -92,8 +90,6 @@ def _is_typescript_code_position(source: str, position: int) -> bool:
         elif state == "block-comment":
             if current == "*" and following == "/":
                 state = "code"
-                index += 2
-                continue
         elif current == "\\":
             index += 2
             continue
@@ -104,31 +100,83 @@ def _is_typescript_code_position(source: str, position: int) -> bool:
         ):
             state = "code"
         index += 1
-    return state == "code"
+    return mask
 
 
 def _code_matches(pattern: str | re.Pattern[str], source: str) -> list[re.Match[str]]:
-    return [
-        match
-        for match in re.finditer(pattern, source)
-        if _is_typescript_code_position(source, match.start())
-    ]
+    code_mask = _typescript_code_mask(source)
+    return [match for match in re.finditer(pattern, source) if code_mask[match.start()]]
 
 
-def _balanced_delimited(source: str, start: int, opening: str, closing: str) -> str:
-    opening_index = source.find(opening, start)
-    if opening_index < 0:
+def _balanced_delimited_bounds(
+    source: str,
+    start: int,
+    opening: str,
+    closing: str,
+) -> tuple[int, int]:
+    code_mask = _typescript_code_mask(source)
+    opening_index = next(
+        (
+            index
+            for index in range(start, len(source))
+            if code_mask[index] and source[index] == opening
+        ),
+        None,
+    )
+    if opening_index is None:
         raise AssertionError(f"declaration has no opening {opening}")
     depth = 0
     for index in range(opening_index, len(source)):
+        if not code_mask[index]:
+            continue
         character = source[index]
         if character == opening:
             depth += 1
         elif character == closing:
             depth -= 1
             if depth == 0:
-                return source[opening_index + 1 : index]
+                return opening_index, index
     raise AssertionError(f"declaration has no closing {closing}")
+
+
+def _balanced_delimited(source: str, start: int, opening: str, closing: str) -> str:
+    opening_index, closing_index = _balanced_delimited_bounds(
+        source,
+        start,
+        opening,
+        closing,
+    )
+    return source[opening_index + 1 : closing_index]
+
+
+def _handler_after_route(source: str, start: int) -> tuple[str, int]:
+    """Return the immediately decorated class method name and start offset."""
+    cursor = start
+    while True:
+        whitespace = re.match(r"\s*", source[cursor:])
+        assert whitespace is not None
+        cursor += whitespace.end()
+        if cursor >= len(source) or source[cursor] != "@":
+            break
+        decorator = re.match(r"@[A-Za-z_][\w.]*", source[cursor:])
+        if decorator is None:
+            raise AssertionError("route is followed by an unsupported decorator")
+        cursor += decorator.end()
+        whitespace = re.match(r"\s*", source[cursor:])
+        assert whitespace is not None
+        cursor += whitespace.end()
+        if cursor < len(source) and source[cursor] == "(":
+            _, closing_index = _balanced_delimited_bounds(source, cursor, "(", ")")
+            cursor = closing_index + 1
+
+    handler_match = re.match(
+        r"(?:(?:public|private|protected|static)\s+)*(?:async\s+)?"
+        r"([A-Za-z_]\w*)\s*\(",
+        source[cursor:],
+    )
+    if handler_match is None:
+        raise AssertionError("route is not immediately followed by a class method")
+    return handler_match.group(1), cursor + handler_match.start()
 
 
 def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
@@ -148,15 +196,10 @@ def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
         method = match.group(1).upper()
         raw_path = match.group(2).strip()
         paths = _route_decorator_paths(raw_path)
-        handler_match = re.search(
-            r"^\s{2}(?:async\s+)?([A-Za-z_]\w*)\s*\(",
-            source[match.end() :],
-            re.MULTILINE,
-        )
-        if not handler_match:
-            raise AssertionError(f"{method} {paths[0] or '/'} has no handler")
-        handler_name = handler_match.group(1)
-        handler_start = match.end() + handler_match.start()
+        try:
+            handler_name, handler_start = _handler_after_route(source, match.end())
+        except AssertionError as exc:
+            raise AssertionError(f"{method} {paths[0] or '/'}: {exc}") from exc
         signature = _balanced_delimited(source, handler_start, "(", ")")
         body_types = frozenset(
             re.findall(
@@ -206,6 +249,31 @@ def client_reference_routes(source: str) -> set[Route]:
     }
 
 
+def _enclosing_function_bounds(source: str, position: int) -> tuple[int, int]:
+    candidates: list[tuple[int, int]] = []
+    for match in _code_matches(
+        re.compile(r"\bfunction\s+[A-Za-z_]\w*\s*\("),
+        source,
+    ):
+        if match.start() >= position:
+            continue
+        try:
+            _, signature_end = _balanced_delimited_bounds(source, match.end() - 1, "(", ")")
+            body_start, body_end = _balanced_delimited_bounds(
+                source,
+                signature_end + 1,
+                "{",
+                "}",
+            )
+        except AssertionError:
+            continue
+        if body_start < position < body_end:
+            candidates.append((body_start, body_end))
+    if not candidates:
+        raise AssertionError("multipart request is not inside a supported function")
+    return max(candidates, key=lambda bounds: bounds[0])
+
+
 def client_multipart_fields(source: str, route: Route) -> set[str]:
     """Extract FormData fields sent by the web client for one literal route."""
     method = re.escape(route.method.lower())
@@ -224,21 +292,43 @@ def client_multipart_fields(source: str, route: Route) -> set[str]:
 
     request = matches[0]
     form_name = request.group(2)
+    function_start, _ = _enclosing_function_bounds(source, request.start())
+    request_scope = source[function_start + 1 : request.start()]
     declarations = _code_matches(
         re.compile(rf"\b(?:const|let)\s+{re.escape(form_name)}\s*=\s*new\s+FormData\(\s*\)"),
-        source[: request.start()],
+        request_scope,
     )
     if not declarations:
         raise AssertionError(
             f"multipart request for {route.method} {route.path} has no FormData declaration"
         )
-    form_source = source[declarations[-1].end() : request.start()]
+    form_source = request_scope[declarations[-1].end() :]
     field_pattern = re.compile(rf"\b{re.escape(form_name)}\.(?:append|set)\(\s*(['\"])(.*?)\1")
     return {match.group(2) for match in _code_matches(field_pattern, form_source)}
 
 
 def _balanced_block(source: str, start: int) -> str:
     return _balanced_delimited(source, start, "{", "}")
+
+
+def _top_level_class_lines(body: str) -> list[str]:
+    code_mask = _typescript_code_mask(body)
+    lines: list[str] = []
+    depth = 0
+    offset = 0
+    for raw_line in body.splitlines(keepends=True):
+        depth_before = depth
+        for index in range(offset, offset + len(raw_line)):
+            if not code_mask[index]:
+                continue
+            if body[index] == "{":
+                depth += 1
+            elif body[index] == "}":
+                depth -= 1
+        if depth_before == 0 or depth == 0:
+            lines.append(raw_line.rstrip("\r\n"))
+        offset += len(raw_line)
+    return lines
 
 
 def class_fields(source: str, class_name: str) -> tuple[set[str], set[str]]:
@@ -253,7 +343,7 @@ def class_fields(source: str, class_name: str) -> tuple[set[str], set[str]]:
     pending_decorators: list[str] = []
     decorator_depth = 0
 
-    for line in body.splitlines():
+    for line in _top_level_class_lines(body):
         stripped = line.strip()
         if not stripped:
             continue
@@ -263,7 +353,7 @@ def class_fields(source: str, class_name: str) -> tuple[set[str], set[str]]:
             continue
 
         field_match = re.match(
-            r"^  ([A-Za-z_]\w*)(\?)?\s*(?::[^=;]+|=\s*[^;]+);?\s*$",
+            r"^\s*([A-Za-z_]\w*)(\?)?\s*(?::[^=;]+|=\s*[^;]+);?\s*$",
             line,
         )
         if field_match:
