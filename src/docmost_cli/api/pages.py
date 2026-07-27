@@ -661,13 +661,18 @@ def _fill_children(
     ancestors: set[str],
 ) -> None:
     """Fill descendants iteratively so valid deep trees do not hit recursion limits."""
-    stack: list[tuple[dict[str, Any], int, set[str]]] = [(page, depth, ancestors)]
+    active_ancestors = set(ancestors)
+    stack: list[tuple[dict[str, Any], int, bool]] = [(page, depth, False)]
     while stack:
-        current_page, current_depth, current_ancestors = stack.pop()
+        current_page, current_depth, leaving = stack.pop()
         page_id = str(current_page["id"])
-        if page_id in current_ancestors:
+        if leaving:
+            active_ancestors.remove(page_id)
+            continue
+        if page_id in active_ancestors:
             raise RuntimeError(f"page tree contains a cycle at page '{page_id}'")
-        child_ancestors = {*current_ancestors, page_id}
+        active_ancestors.add(page_id)
+        stack.append((current_page, current_depth, True))
 
         children = current_page.get("children", [])
         if max_depth is not None and current_depth >= max_depth:
@@ -692,4 +697,4 @@ def _fill_children(
                 ) from exc
 
         for child in reversed(children):
-            stack.append((child, current_depth + 1, child_ancestors))
+            stack.append((child, current_depth + 1, False))

@@ -37,6 +37,15 @@ _MARKDOWN_LINK_RE = re.compile(
     r"(?:\s+(?:\"(?:\\.|[^\"])*\"|'(?:\\.|[^'])*'))?\)"
 )
 _SERVER_ATTACHMENT_RE = re.compile(r"(?:^|/)(?:api/)?files/([^/?#]+)/")
+_WINDOWS_UNSAFE_FILENAME_RE = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+_WINDOWS_RESERVED_NAMES = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 @dataclass(frozen=True)
@@ -53,7 +62,12 @@ class LocalAssetReference:
 
 def _safe_file_name(file_name: str, attachment_id: str) -> str:
     name = Path(file_name.replace("\\", "/")).name.strip()
-    return name if name not in {"", ".", ".."} else f"attachment-{attachment_id}"
+    name = _WINDOWS_UNSAFE_FILENAME_RE.sub("-", name).rstrip(" .")
+    if name in {"", ".", ".."}:
+        return f"attachment-{attachment_id}"
+    if name.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        name = f"_{name}"
+    return name
 
 
 def asset_relative_path(attachment_id: str, file_name: str) -> str:

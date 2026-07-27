@@ -8,6 +8,7 @@ from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
 from docmost_cli.sync.assets import (
     asset_markdown_path,
+    asset_relative_path,
     collect_attachment_ids,
     compute_file_hash,
     discover_local_assets,
@@ -45,6 +46,14 @@ def test_collect_attachment_ids_deduplicates_nested_nodes() -> None:
     }
 
     assert collect_attachment_ids(document) == [ATTACHMENT_ID, "second-id", "legacy-id"]
+
+
+def test_asset_relative_path_normalizes_windows_unsafe_filenames() -> None:
+    assert (
+        asset_relative_path(ATTACHMENT_ID, "reports/CON: quarterly?.txt. ")
+        == f"files/{ATTACHMENT_ID}/CON- quarterly-.txt"
+    )
+    assert asset_relative_path(ATTACHMENT_ID, "CON.txt") == f"files/{ATTACHMENT_ID}/_CON.txt"
 
 
 def test_discover_local_assets_decodes_url_paths(tmp_path: Path) -> None:
