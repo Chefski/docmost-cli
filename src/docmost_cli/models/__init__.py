@@ -1,3 +1,5 @@
 """Pydantic data models for Docmost API types."""
 
-__all__: list[str] = []
+from docmost_cli.models.pages import CreatePageRequest, CreatePageResponse
+
+__all__ = ["CreatePageRequest", "CreatePageResponse"]

@@ -77,7 +77,7 @@ docmost-cli page create <space-slug> --title "My Page" --file content.md
 | `docmost-cli page create <space-slug>` | Create a new page (`--title`, `--file`, `--stdin`) |
 | `docmost-cli page update <page-id>` | Update a page (`--title`, `--content`, `--file`) |
 | `docmost-cli page delete <page-id>` | Delete a page (with confirmation, `--yes` to skip) |
-| `docmost-cli page move <page-id>` | Move a page (`--parent`, `--space`, `--position`) |
+| `docmost-cli page move <page-id>` | Move a page (`--parent`, `--root`, `--space`, `--position`) |
 | `docmost-cli page duplicate <page-id>` | Duplicate a page |
 | `docmost-cli page copy <page-id>` | Copy a page to another space (`--space`) |
 | `docmost-cli page children <page-id>` | List child pages (`--json`) |
