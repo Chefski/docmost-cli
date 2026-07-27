@@ -19,12 +19,13 @@ __all__ = [
 
 def _slug_from_name(name: str) -> str:
     slug = re.sub(r"[^a-z0-9_-]+", "-", name.lower()).strip("-_")
+    digest = hashlib.sha256(name.encode()).hexdigest()[:12]
     if not slug:
-        digest = hashlib.sha256(name.encode()).hexdigest()[:12]
         return f"space-{digest}"
+    slug = slug[:100].rstrip("-_")
     if len(slug) == 1:
-        slug = f"{slug}-space"
-    return slug[:100].rstrip("-_")
+        return f"{slug}-{digest}"
+    return slug
 
 
 def list_spaces(

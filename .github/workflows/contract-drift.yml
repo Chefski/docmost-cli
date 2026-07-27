@@ -6,6 +6,7 @@ on:
       - ".github/workflows/contract-drift.yml"
       - "scripts/check_docmost_contracts.py"
       - "src/docmost_cli/api/**"
+      - "src/docmost_cli/models/**"
       - "tests/conftest.py"
       - "tests/contracts/**"
       - "tests/integration/**"
@@ -16,6 +17,7 @@ on:
       - ".github/workflows/contract-drift.yml"
       - "scripts/check_docmost_contracts.py"
       - "src/docmost_cli/api/**"
+      - "src/docmost_cli/models/**"
       - "tests/conftest.py"
       - "tests/contracts/**"
       - "tests/integration/**"
@@ -73,3 +75,6 @@ jobs:
 
       - name: Lint contract test layer
         run: ruff check scripts tests/contracts tests/integration
+
+      - name: Check contract test formatting
+        run: ruff format --check scripts tests/contracts tests/integration

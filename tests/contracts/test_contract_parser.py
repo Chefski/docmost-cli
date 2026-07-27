@@ -48,6 +48,22 @@ export class PageController {
     assert controller_routes(source) == {Route("POST", "/pages/content")}
 
 
+def test_controller_array_routes_include_each_literal_member() -> None:
+    source = """
+@Controller('pages')
+export class PageController {
+  @Post(['content', 'legacy-content'])
+  async content() {}
+}
+"""
+    expected = {
+        Route("POST", "/pages/content"),
+        Route("POST", "/pages/legacy-content"),
+    }
+    assert controller_routes(source) == expected
+    assert set(controller_bindings(source)) == expected
+
+
 def test_dto_initializer_is_not_required() -> None:
     source = """
 export class ExampleDto {
@@ -89,6 +105,16 @@ await api.get('/search-attachments');
         Route("GET", "/search-attachments"),
         Route("POST", "/search-attachments"),
     }
+
+
+def test_client_reference_route_ignores_comments_and_string_literals() -> None:
+    source = """
+// api.post("/commented-out", params);
+const example = 'api.get("/inside-a-string")';
+/* api.post("/also-commented-out", params); */
+api.post("/live", params);
+"""
+    assert client_reference_routes(source) == {Route("POST", "/live")}
 
 
 def test_multipart_client_fields_are_scoped_to_the_requested_route() -> None:

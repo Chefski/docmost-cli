@@ -46,6 +46,75 @@ def _quoted_argument(raw: str) -> str:
     return match.group(2)
 
 
+def _route_decorator_paths(raw: str) -> list[str]:
+    if not raw:
+        return [""]
+    if not raw.startswith("["):
+        return [_quoted_argument(raw)]
+    if not raw.endswith("]"):
+        raise AssertionError(f"unsupported route decorator argument: {raw!r}")
+
+    members = raw[1:-1]
+    matches = list(re.finditer(r"(['\"])(.*?)\1", members, re.DOTALL))
+    remainder = list(members)
+    for match in matches:
+        remainder[match.start() : match.end()] = " " * (match.end() - match.start())
+    if not matches or not re.fullmatch(r"[\s,]*", "".join(remainder)):
+        raise AssertionError(f"unsupported route decorator argument: {raw!r}")
+    return [match.group(2) for match in matches]
+
+
+def _is_typescript_code_position(source: str, position: int) -> bool:
+    """Return whether a source offset is executable TypeScript, not text/comment."""
+    state = "code"
+    index = 0
+    while index < position:
+        current = source[index]
+        following = source[index + 1] if index + 1 < position else ""
+        if state == "code":
+            if current == "/" and following == "/":
+                state = "line-comment"
+                index += 2
+                continue
+            if current == "/" and following == "*":
+                state = "block-comment"
+                index += 2
+                continue
+            if current == "'":
+                state = "single-quote"
+            elif current == '"':
+                state = "double-quote"
+            elif current == "`":
+                state = "template"
+        elif state == "line-comment":
+            if current == "\n":
+                state = "code"
+        elif state == "block-comment":
+            if current == "*" and following == "/":
+                state = "code"
+                index += 2
+                continue
+        elif current == "\\":
+            index += 2
+            continue
+        elif (
+            (state == "single-quote" and current == "'")
+            or (state == "double-quote" and current == '"')
+            or (state == "template" and current == "`")
+        ):
+            state = "code"
+        index += 1
+    return state == "code"
+
+
+def _code_matches(pattern: str | re.Pattern[str], source: str) -> list[re.Match[str]]:
+    return [
+        match
+        for match in re.finditer(pattern, source)
+        if _is_typescript_code_position(source, match.start())
+    ]
+
+
 def _balanced_delimited(source: str, start: int, opening: str, closing: str) -> str:
     opening_index = source.find(opening, start)
     if opening_index < 0:
@@ -64,31 +133,28 @@ def _balanced_delimited(source: str, start: int, opening: str, closing: str) -> 
 
 def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
     """Extract simple NestJS GET/POST routes and their handler body types."""
-    controller_match = re.search(r"@Controller\((.*?)\)", source, re.DOTALL)
-    if not controller_match:
+    controller_matches = _code_matches(
+        re.compile(r"@Controller\((.*?)\)", re.DOTALL),
+        source,
+    )
+    if not controller_matches:
         raise AssertionError("controller source has no @Controller decorator")
+    controller_match = controller_matches[0]
     raw_prefix = controller_match.group(1).strip()
     prefix = _quoted_argument(raw_prefix) if raw_prefix else ""
 
     bindings: dict[Route, HandlerBinding] = {}
-    for match in re.finditer(r"@(Get|Post)\((.*?)\)", source, re.DOTALL):
+    for match in _code_matches(re.compile(r"@(Get|Post)\((.*?)\)", re.DOTALL), source):
         method = match.group(1).upper()
         raw_path = match.group(2).strip()
-        if not raw_path:
-            path = ""
-        elif raw_path.startswith("["):
-            # None of the CLI endpoints use multi-route decorators. Refuse to
-            # guess if that changes.
-            continue
-        else:
-            path = _quoted_argument(raw_path)
+        paths = _route_decorator_paths(raw_path)
         handler_match = re.search(
             r"^\s{2}(?:async\s+)?([A-Za-z_]\w*)\s*\(",
             source[match.end() :],
             re.MULTILINE,
         )
         if not handler_match:
-            raise AssertionError(f"{method} {path or '/'} has no handler")
+            raise AssertionError(f"{method} {paths[0] or '/'} has no handler")
         handler_name = handler_match.group(1)
         handler_start = match.end() + handler_match.start()
         signature = _balanced_delimited(source, handler_start, "(", ")")
@@ -98,43 +164,45 @@ def controller_bindings(source: str) -> dict[Route, HandlerBinding]:
                 signature,
             )
         )
-        route = Route(method=method, path=_normalize_path(prefix, path))
-        bindings[route] = HandlerBinding(handler_name, body_types)
+        for path in paths:
+            route = Route(method=method, path=_normalize_path(prefix, path))
+            bindings[route] = HandlerBinding(handler_name, body_types)
     return bindings
 
 
 def controller_routes(source: str) -> set[Route]:
     """Extract literal GET/POST routes without parsing handler signatures."""
-    controller_match = re.search(r"@Controller\((.*?)\)", source, re.DOTALL)
-    if not controller_match:
+    controller_matches = _code_matches(
+        re.compile(r"@Controller\((.*?)\)", re.DOTALL),
+        source,
+    )
+    if not controller_matches:
         raise AssertionError("controller source has no @Controller decorator")
+    controller_match = controller_matches[0]
     raw_prefix = controller_match.group(1).strip()
     prefix = _quoted_argument(raw_prefix) if raw_prefix else ""
 
     routes: set[Route] = set()
-    for match in re.finditer(r"@(Get|Post)\((.*?)\)", source, re.DOTALL):
+    for match in _code_matches(re.compile(r"@(Get|Post)\((.*?)\)", re.DOTALL), source):
         raw_path = match.group(2).strip()
-        if raw_path.startswith("["):
-            continue
-        path = _quoted_argument(raw_path) if raw_path else ""
-        routes.add(
-            Route(
-                method=match.group(1).upper(),
-                path=_normalize_path(prefix, path),
+        for path in _route_decorator_paths(raw_path):
+            routes.add(
+                Route(
+                    method=match.group(1).upper(),
+                    path=_normalize_path(prefix, path),
+                )
             )
-        )
     return routes
 
 
 def client_reference_routes(source: str) -> set[Route]:
     """Extract literal API method/path pairs from the Docmost web client."""
+    pattern = re.compile(
+        r"\bapi\.(get|post)\s*(?:<[^;\n]+?>)?\s*\(\s*(['\"])(/[^'\"]+)\2",
+        re.IGNORECASE,
+    )
     return {
-        Route(method.upper(), path)
-        for method, _quote, path in re.findall(
-            r"\bapi\.(get|post)\s*(?:<[^;\n]+?>)?\s*\(\s*(['\"])(/[^'\"]+)\2",
-            source,
-            re.IGNORECASE,
-        )
+        Route(match.group(1).upper(), match.group(3)) for match in _code_matches(pattern, source)
     }
 
 
@@ -147,7 +215,7 @@ def client_multipart_fields(source: str, route: Route) -> set[str]:
         rf"(['\"]){path}\1\s*,\s*([A-Za-z_]\w*)",
         re.IGNORECASE,
     )
-    matches = list(request_pattern.finditer(source))
+    matches = _code_matches(request_pattern, source)
     if len(matches) != 1:
         raise AssertionError(
             f"expected one multipart client request for {route.method} {route.path}, "
@@ -156,24 +224,17 @@ def client_multipart_fields(source: str, route: Route) -> set[str]:
 
     request = matches[0]
     form_name = request.group(2)
-    declarations = list(
-        re.finditer(
-            rf"\b(?:const|let)\s+{re.escape(form_name)}\s*=\s*new\s+FormData\(\s*\)",
-            source[: request.start()],
-        )
+    declarations = _code_matches(
+        re.compile(rf"\b(?:const|let)\s+{re.escape(form_name)}\s*=\s*new\s+FormData\(\s*\)"),
+        source[: request.start()],
     )
     if not declarations:
         raise AssertionError(
             f"multipart request for {route.method} {route.path} has no FormData declaration"
         )
     form_source = source[declarations[-1].end() : request.start()]
-    return {
-        field
-        for _quote, field in re.findall(
-            rf"\b{re.escape(form_name)}\.(?:append|set)\(\s*(['\"])(.*?)\1",
-            form_source,
-        )
-    }
+    field_pattern = re.compile(rf"\b{re.escape(form_name)}\.(?:append|set)\(\s*(['\"])(.*?)\1")
+    return {match.group(2) for match in _code_matches(field_pattern, form_source)}
 
 
 def _balanced_block(source: str, start: int) -> str:
