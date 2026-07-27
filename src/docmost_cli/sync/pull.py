@@ -419,6 +419,23 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _sync_tree(path: Path) -> None:
+    """Flush staged file contents and directories before publication."""
+    for current_root, _dir_names, file_names in os.walk(path, topdown=False):
+        current = Path(current_root)
+        for file_name in file_names:
+            file_path = current / file_name
+            file_stat = file_path.lstat()
+            if not stat.S_ISREG(file_stat.st_mode):
+                continue
+            descriptor = os.open(file_path, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        _sync_directory(current)
+
+
 def _path_identity(path: Path) -> tuple[int, int] | None:
     """Return a stable filesystem identity without following symlinks."""
     try:
@@ -582,7 +599,7 @@ def _staging_is_recovery_data(target: Path, staging_path: Path) -> bool:
         target_identity = _payload_identity(payload, "target_identity")
     except RuntimeError:
         return True
-    return target_identity is not None and _path_identity(staging_path) == target_identity
+    return target_identity is not None
 
 
 def _journal_sibling(
@@ -731,22 +748,20 @@ def _publish_staged_pull(
             raise
 
     if _atomic_exchange_directories(staging_path, target):
-        try:
-            _sync_directory(target.parent)
-            if expected_snapshot is not _SNAPSHOT_UNSET:
+        _sync_directory(target.parent)
+        if expected_snapshot is not _SNAPSHOT_UNSET:
+            try:
                 assert expected_snapshot is None or isinstance(expected_snapshot, dict)
                 _assert_target_unchanged(staging_path, expected_snapshot)
-            _update_publish_journal(target, journal, "published")
-        except BaseException:
-            try:
-                if _path_identity(target) == _payload_identity(
-                    journal, "staging_identity"
-                ) and _atomic_exchange_directories(staging_path, target):
-                    _sync_directory(target.parent)
-                    _remove_publish_journal(target)
-            except OSError:
-                pass
-            raise
+            except BaseException:
+                try:
+                    if _atomic_exchange_directories(staging_path, target):
+                        _sync_directory(target.parent)
+                        _remove_publish_journal(target)
+                except OSError:
+                    pass
+                raise
+        _update_publish_journal(target, journal, "published")
         try:
             _remove_tree(staging_path)
         except OSError as exc:
@@ -770,6 +785,7 @@ def _publish_staged_pull(
     os.replace(target, backup_path)
     try:
         _sync_directory(target.parent)
+        _update_publish_journal(target, journal, "target-moved")
     except BaseException:
         try:
             os.replace(backup_path, target)
@@ -787,7 +803,6 @@ def _publish_staged_pull(
             _sync_directory(target.parent)
             _remove_publish_journal(target)
             raise
-    _update_publish_journal(target, journal, "target-moved")
     try:
         os.replace(staging_path, target)
         _sync_directory(target.parent)
@@ -1023,6 +1038,7 @@ def pull_space(
             manifest,
             {str(page["id"]) for page in flat_pages},
         )
+        _sync_tree(staging_path)
 
         # 8. Publish as one directory snapshot, with rollback on rename failure.
         _assert_target_unchanged(target_path, target_snapshot)

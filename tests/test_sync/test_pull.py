@@ -830,6 +830,45 @@ class TestPullAtomicPublication:
         assert (target / "new.txt").read_text(encoding="utf-8") == "new"
         assert not staging.exists()
 
+    def test_post_exchange_fsync_failure_preserves_both_snapshots(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        if not _atomic_exchange_directories(staging, target):
+            pytest.skip("atomic directory exchange is not available on this filesystem")
+        assert _atomic_exchange_directories(staging, target)
+        expected_snapshot = _snapshot_target(target)
+        real_sync_directory = _sync_directory
+        sync_count = 0
+
+        def fail_after_exchange(path: Path) -> None:
+            nonlocal sync_count
+            sync_count += 1
+            if sync_count == 2:
+                (target / "post-exchange-edit.txt").write_text("keep", encoding="utf-8")
+                raise OSError("simulated exchange fsync failure")
+            real_sync_directory(path)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._sync_directory",
+            fail_after_exchange,
+        )
+
+        with pytest.raises(OSError, match="simulated exchange fsync failure"):
+            _publish_staged_pull(staging, target, expected_snapshot=expected_snapshot)
+
+        assert (target / "new.txt").read_text(encoding="utf-8") == "new"
+        assert (target / "post-exchange-edit.txt").read_text(encoding="utf-8") == "keep"
+        assert (staging / "old.txt").read_text(encoding="utf-8") == "old"
+        assert _staging_is_recovery_data(target, staging)
+        assert _publish_journal_path(target).exists()
+
     def test_recovery_preserves_backup_when_target_was_recreated(
         self,
         tmp_path: Path,
