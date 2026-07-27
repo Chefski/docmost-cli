@@ -181,8 +181,6 @@ def _operation_for(request: Request) -> tuple[str, dict[str, Any]] | None:
             continue
         template = operation["path"]
         pattern = re.sub(r":[A-Za-z_]\w*", r"[^/]+", re.escape(template))
-        # re.escape also escapes ':', so restore template substitutions.
-        pattern = re.sub(r"\\:[A-Za-z_]\\w\\*", r"[^/]+", pattern)
         if re.fullmatch(pattern, request.path):
             return name, operation
         if template == request.path:
@@ -380,20 +378,22 @@ def test_session_login_request_matches_pinned_contract(
                 "00000000-0000-4000-8000-000000000001",
             ),
         ),
-        (
+        pytest.param(
             "pages.export",
             lambda client: export_page(
                 client,
                 "00000000-0000-4000-8000-000000000001",
             ),
+            id="pages-export-content",
         ),
-        (
+        pytest.param(
             "pages.export",
             lambda client: export_page_archive(
                 client,
                 "00000000-0000-4000-8000-000000000001",
                 include_children=True,
             ),
+            id="pages-export-archive",
         ),
         (
             "pages.history",
@@ -437,22 +437,24 @@ def test_session_login_request_matches_pinned_contract(
                 cursor="cursor-1",
             ),
         ),
-        (
+        pytest.param(
             "pages.sidebar",
             lambda client: get_page_children(
                 client,
                 "00000000-0000-4000-8000-000000000001",
                 space_id="00000000-0000-4000-8000-000000000002",
             ),
+            id="pages-sidebar-children",
         ),
-        (
+        pytest.param(
             "pages.sidebar",
             lambda client: get_sidebar_pages(
                 client,
                 "00000000-0000-4000-8000-000000000002",
             ),
+            id="pages-sidebar-space",
         ),
-        (
+        pytest.param(
             "pages.update",
             lambda client: update_page_meta(
                 client,
@@ -460,14 +462,16 @@ def test_session_login_request_matches_pinned_contract(
                 title="Updated",
                 icon="📚",
             ),
+            id="pages-update-metadata",
         ),
-        (
+        pytest.param(
             "pages.update",
             lambda client: update_page_content(
                 client,
                 page_id="00000000-0000-4000-8000-000000000001",
                 content="# Updated",
             ),
+            id="pages-update-content",
         ),
         (
             "search.pages",
