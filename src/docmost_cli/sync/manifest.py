@@ -217,8 +217,8 @@ def build_page_entry(
     icon: str,
     content_hash: str,
     attachment_ids: list[str] | None = None,
-    server_revision: dict[str, Any] | None = None,
     rich_content: object | None = None,
+    server_revision: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a single page entry for inclusion in the manifest.
 
@@ -229,8 +229,8 @@ def build_page_entry(
         icon: Page icon (emoji or empty string).
         content_hash: Content hash from :func:`compute_content_hash`.
         attachment_ids: Stable attachment IDs referenced by the page.
-        server_revision: Canonical revision from :func:`build_server_revision`.
         rich_content: Optional ProseMirror loss-prevention metadata.
+        server_revision: Canonical revision from :func:`build_server_revision`.
 
     Returns:
         A dict representing one page in the manifest ``pages`` map.

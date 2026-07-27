@@ -354,6 +354,51 @@ class TestPullCreatesFiles:
             "conversion:local-fallback"
         ]
 
+    def test_stable_unversioned_split_content_uses_local_conversion(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Legacy Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        for _ in range(2):
+            httpx_mock.add_response(
+                url=f"{_TEST_URL}/api/pages/info",
+                json={
+                    "id": "p1",
+                    "title": "Legacy Page",
+                    "icon": "",
+                    "parentPageId": None,
+                    "spaceId": "space-1",
+                    "updatedAt": "revision-1",
+                },
+            )
+            httpx_mock.add_response(
+                url=f"{_TEST_URL}/api/pages/content",
+                json={"data": {"content": _PM_DOC}},
+            )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        entry = manifest["pages"]["p1"]
+        assert entry["server_revision"]["updated_at"] == "revision-1"
+        assert "conversion:local-fallback" in entry["rich_content"]["unsafe_features"]
+        assert "conversion:unverified-revision" not in entry["rich_content"]["unsafe_features"]
+
     def test_retries_when_raw_and_markdown_revisions_differ(
         self,
         httpx_mock,

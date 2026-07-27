@@ -21,10 +21,14 @@ __all__ = [
     "fetch_server_attachment",
     "fetch_server_page",
     "format_reconciliation_guidance",
+    "server_page_can_use_canonical_revision",
+    "server_page_revision_is_verified",
     "verify_remote_revisions",
 ]
 
 _REVISION_ALLOWED_STATUSES = frozenset({404, 429, 500, 502, 503, 504})
+_REVISION_MODE_KEY = "_docmost_cli_revision_mode"
+_VERIFIED_REVISION_MODES = frozenset({"atomic", "token", "stable"})
 
 
 @dataclass(frozen=True)
@@ -60,6 +64,7 @@ def fetch_server_page(
     page_id: str,
     *,
     failure_suffix: str = "No changes were pushed.",
+    _stability_samples: int = 3,
 ) -> dict[str, Any] | None:
     """Fetch raw page state without turning a missing page into an early CLI exit.
 
@@ -91,12 +96,13 @@ def fetch_server_page(
             f"the server returned invalid JSON. {failure_suffix}"
         )
 
-    data = result.get("data", result) if isinstance(result, dict) else {}
-    if not isinstance(data, dict) or not data.get("id"):
+    raw_data = result.get("data", result) if isinstance(result, dict) else {}
+    if not isinstance(raw_data, dict) or raw_data.get("id") != page_id:
         print_error(
             f"Could not verify the remote revision for page {page_id}: "
             f"the server response did not contain page state. {failure_suffix}"
         )
+    data = {**raw_data, _REVISION_MODE_KEY: "atomic"}
 
     # Older Docmost releases may expose content separately from page metadata.
     # Enrich both pull and preflight through the same path so their fingerprints
@@ -133,8 +139,60 @@ def fetch_server_page(
                 f"Could not verify the remote revision for page {page_id}: "
                 f"the server response did not contain page content. {failure_suffix}"
             )
-        data = {**data, "content": content_data["content"]}
+        content_page_id = content_data.get("id") or content_data.get("pageId")
+        if content_page_id is not None and content_page_id != page_id:
+            print_error(
+                f"Could not verify the remote revision for page {page_id}: "
+                f"the server returned content for a different page. {failure_suffix}"
+            )
+        metadata_updated_at = data.get("updatedAt")
+        content_updated_at = content_data.get("updatedAt")
+        revision_token_matches = (
+            isinstance(metadata_updated_at, str)
+            and isinstance(content_updated_at, str)
+            and metadata_updated_at == content_updated_at
+        )
+        data = {
+            **data,
+            "content": content_data["content"],
+            _REVISION_MODE_KEY: "token" if revision_token_matches else "unverified",
+        }
+
+        if not revision_token_matches and _stability_samples > 1:
+            previous_fingerprint = build_server_revision(data)["fingerprint"]
+            for _ in range(_stability_samples - 1):
+                sample = fetch_server_page(
+                    client,
+                    page_id,
+                    failure_suffix=failure_suffix,
+                    _stability_samples=1,
+                )
+                if sample is None:
+                    return None
+                if server_page_revision_is_verified(sample):
+                    return sample
+                current_fingerprint = build_server_revision(sample)["fingerprint"]
+                if current_fingerprint == previous_fingerprint:
+                    sample[_REVISION_MODE_KEY] = "stable"
+                    return sample
+                previous_fingerprint = current_fingerprint
+            print_error(
+                f"Could not verify the remote revision for page {page_id}: "
+                f"page metadata and content changed repeatedly. {failure_suffix}"
+            )
     return data
+
+
+def server_page_revision_is_verified(page: dict[str, Any]) -> bool:
+    """Return whether page metadata and content came from one verified revision."""
+    return page.get(_REVISION_MODE_KEY) in _VERIFIED_REVISION_MODES
+
+
+def server_page_can_use_canonical_revision(page: dict[str, Any]) -> bool:
+    """Return whether canonical Markdown can be tied to the accepted raw revision."""
+    return page.get(_REVISION_MODE_KEY) in {"atomic", "token"} and isinstance(
+        page.get("updatedAt"), str
+    )
 
 
 def fetch_server_attachment(
@@ -223,10 +281,23 @@ def verify_remote_revisions(
             )
             continue
 
-        result.pages[change.page_id] = current_page
+        result.pages[change.page_id] = {
+            key: value for key, value in current_page.items() if key != _REVISION_MODE_KEY
+        }
         current = build_server_revision(current_page)
 
-        if not _is_supported_revision(expected):
+        if not server_page_revision_is_verified(current_page):
+            result.conflicts.append(
+                RemoteConflict(
+                    page_id=change.page_id,
+                    title=title,
+                    filename=filename,
+                    reason="server could not provide a revision-consistent page snapshot",
+                    expected_updated_at=_updated_at(expected),
+                    current_updated_at=_updated_at(current),
+                )
+            )
+        elif not _is_supported_revision(expected):
             result.conflicts.append(
                 RemoteConflict(
                     page_id=change.page_id,
