@@ -54,6 +54,8 @@ FIXTURE_PAIRS = [
     "marks",
     "table",
     "empty_doc",
+    "supported_rich_content",
+    "unsupported_rich_content",
 ]
 
 

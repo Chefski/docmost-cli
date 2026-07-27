@@ -1,0 +1,179 @@
+{
+  "type": "doc",
+  "content": [
+    {
+      "type": "heading",
+      "attrs": {
+        "id": "generated-heading-id",
+        "level": 2,
+        "textAlign": "left",
+        "indent": 0
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Safe heading"
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "attrs": {
+        "id": "generated-paragraph-id",
+        "textAlign": null,
+        "indent": 0
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "Bold link",
+          "marks": [
+            {
+              "type": "bold"
+            },
+            {
+              "type": "link",
+              "attrs": {
+                "href": "https://example.com",
+                "title": "Example",
+                "internal": false,
+                "target": null,
+                "rel": null
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "orderedList",
+      "attrs": {
+        "start": 3
+      },
+      "content": [
+        {
+          "type": "listItem",
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Third item"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "taskList",
+      "content": [
+        {
+          "type": "taskItem",
+          "attrs": {
+            "checked": true
+          },
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Done"
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "codeBlock",
+      "attrs": {
+        "language": "python"
+      },
+      "content": [
+        {
+          "type": "text",
+          "text": "print(\"safe\")"
+        }
+      ]
+    },
+    {
+      "type": "callout",
+      "attrs": {
+        "type": "info",
+        "icon": null
+      },
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Safe callout"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "paragraph",
+      "content": [
+        {
+          "type": "mathInline",
+          "attrs": {
+            "text": "x^2"
+          }
+        }
+      ]
+    },
+    {
+      "type": "table",
+      "content": [
+        {
+          "type": "tableRow",
+          "content": [
+            {
+              "type": "tableHeader",
+              "attrs": {
+                "colspan": 1,
+                "rowspan": 1,
+                "colwidth": null,
+                "backgroundColor": null,
+                "backgroundColorName": null
+              },
+              "content": [
+                {
+                  "type": "paragraph",
+                  "content": [
+                    {
+                      "type": "text",
+                      "text": "Header"
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "type": "image",
+      "attrs": {
+        "src": "/api/files/image-id/diagram.png",
+        "alt": "Diagram",
+        "attachmentId": "image-id",
+        "size": 123,
+        "align": "center",
+        "width": null,
+        "height": null,
+        "aspectRatio": null,
+        "placeholder": null
+      }
+    }
+  ]
+}

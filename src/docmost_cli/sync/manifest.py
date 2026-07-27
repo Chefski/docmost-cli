@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 __all__ = [
     "MANIFEST_FILENAME",
     "MANIFEST_VERSION",
+    "SERVER_REVISION_VERSION",
     "build_manifest",
     "build_page_entry",
     "build_server_revision",
@@ -197,6 +198,7 @@ def build_manifest(
             content_hash=page["content_hash"],
             attachment_ids=page.get("attachment_ids", []),
             server_revision=page.get("server_revision"),
+            rich_content=page.get("rich_content"),
         )
     return {
         "version": MANIFEST_VERSION,
@@ -216,6 +218,7 @@ def build_page_entry(
     content_hash: str,
     attachment_ids: list[str] | None = None,
     server_revision: dict[str, Any] | None = None,
+    rich_content: object | None = None,
 ) -> dict[str, Any]:
     """Build a single page entry for inclusion in the manifest.
 
@@ -225,8 +228,9 @@ def build_page_entry(
         parent_id: Parent page ID, or ``None`` for root pages.
         icon: Page icon (emoji or empty string).
         content_hash: Content hash from :func:`compute_content_hash`.
-        attachment_ids: Attachment IDs referenced by the page.
+        attachment_ids: Stable attachment IDs referenced by the page.
         server_revision: Canonical revision from :func:`build_server_revision`.
+        rich_content: Optional ProseMirror loss-prevention metadata.
 
     Returns:
         A dict representing one page in the manifest ``pages`` map.
@@ -242,4 +246,6 @@ def build_page_entry(
         entry["attachment_ids"] = attachment_ids
     if server_revision:
         entry["server_revision"] = server_revision
+    if rich_content is not None:
+        entry["rich_content"] = rich_content
     return entry

@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from docmost_cli.api.client import DocmostClient
+    from docmost_cli.sync.rich_content import RichContentConflict
 
 __all__ = ["PushResult", "push_space"]
 
@@ -77,6 +78,10 @@ def push_space(
         load_manifest,
         save_manifest,
     )
+    from docmost_cli.sync.rich_content import (
+        find_rich_content_conflicts,
+        markdown_rich_content_state,
+    )
 
     space_id = resolve_space_id(client, space_slug)
 
@@ -95,9 +100,24 @@ def push_space(
     # Display summary
     _print_summary(diff)
 
+    rich_content_conflicts = find_rich_content_conflicts(diff)
     if dry_run:
         _print_dry_run(diff)
+        if rich_content_conflicts:
+            _print_rich_content_conflicts(rich_content_conflicts)
+            _err.print(
+                "[yellow]A real push would be refused because the protected content above "
+                "cannot round-trip safely through Markdown.[/yellow]"
+            )
         return result
+
+    if rich_content_conflicts:
+        _print_rich_content_conflicts(rich_content_conflicts)
+        print_error(
+            "Refusing to replace content that cannot round-trip safely through Markdown. "
+            "Edit those pages in Docmost, or revert their local content/attachment changes. "
+            "Title, icon, and parent-only changes remain safe."
+        )
 
     # Check every existing page before making any mutation. This keeps a
     # conflict from being discovered after an unrelated new page was created.
@@ -152,6 +172,12 @@ def push_space(
                 local_files_unchanged=True,
             )
         )
+
+    # Recheck every guarded replacement before Phase A so a later conflict
+    # cannot leave earlier creates or updates partially applied.
+    for change in diff.modified:
+        if change.changes & {ChangeType.CONTENT_CHANGED, ChangeType.ATTACHMENT_CHANGED}:
+            _ensure_current_rich_content_is_safe(client, change)
 
     # --- Execute changes ---
 
@@ -240,6 +266,7 @@ def push_space(
             icon=icon,
             content_hash=content_hash,
             attachment_ids=attachment_ids,
+            rich_content=markdown_rich_content_state(),
         )
         refresh_revision(new_id)
         existing_ids.add(new_id)
@@ -261,6 +288,9 @@ def push_space(
 
         # Content update
         if has_content_change:
+            # Validate before asset preparation because changed assets are
+            # uploaded in place and are themselves a server mutation.
+            _ensure_current_rich_content_is_safe(client, change)
             try:
                 server_body, asset_entries, attachment_ids = prepare_markdown_assets(
                     client,
@@ -271,6 +301,9 @@ def push_space(
                 )
             except FileNotFoundError as exc:
                 print_error(f"Attachment file not found: {exc.filename or exc}")
+            # Revalidate after any uploads so a concurrent editor cannot add a
+            # protected feature while local assets are being prepared.
+            _ensure_current_rich_content_is_safe(client, change)
             update_page_content(client, page_id=page_id, content=server_body)
             manifest["assets"].update(asset_entries)
             _err.print(f"  Updated: {title}")
@@ -294,6 +327,10 @@ def push_space(
             manifest_parent_id = (change.manifest_entry or {}).get("parent_id") or None
 
         content_hash = compute_content_hash(body)
+        previous_rich_content = (change.manifest_entry or {}).get("rich_content")
+        rich_content = (
+            markdown_rich_content_state() if has_content_change else previous_rich_content
+        )
         manifest["pages"][page_id] = build_page_entry(
             title=title,
             filename=change.filename,
@@ -302,6 +339,7 @@ def push_space(
             content_hash=content_hash,
             attachment_ids=attachment_ids,
             server_revision=(change.manifest_entry or {}).get("server_revision"),
+            rich_content=rich_content,
         )
         if ChangeType.MOVED not in change.changes and page_id not in forced_conflict_ids:
             refresh_revision(page_id)
@@ -455,6 +493,34 @@ def _print_summary(diff: SyncDiff) -> None:
     _err.print("Push plan:")
     for line in lines:
         _err.print(line)
+
+
+def _print_rich_content_conflicts(conflicts: list[RichContentConflict]) -> None:
+    """Print page-level diagnostics for blocked lossy replacements."""
+    _err.print("[red]Rich-content safety check failed:[/red]")
+    for conflict in conflicts:
+        features = ", ".join(conflict.features)
+        _err.print(f"  {conflict.title} ({conflict.filename}): {features}")
+        if conflict.snapshot_path:
+            _err.print(f"    Raw source snapshot: {conflict.snapshot_path}")
+
+
+def _ensure_current_rich_content_is_safe(
+    client: DocmostClient,
+    change: PageChange,
+) -> None:
+    """Refuse a guarded replacement when the current server page is lossy."""
+    from docmost_cli.output.formatter import print_error
+    from docmost_cli.sync.rich_content import find_current_rich_content_conflict
+
+    current_conflict = find_current_rich_content_conflict(client, change)
+    if current_conflict is None:
+        return
+    _print_rich_content_conflicts([current_conflict])
+    print_error(
+        "Refusing to replace rich content added in Docmost since the last pull. "
+        "Pull again before editing this page locally."
+    )
 
 
 def _print_dry_run(diff: SyncDiff) -> None:

@@ -146,7 +146,7 @@ class TestMutationSafeRetries:
                 "/pages/info",
                 json={"pageId": "missing"},
                 retry_safe=True,
-                allowed_statuses=frozenset({404}),
+                allowed_error_statuses=frozenset({404}),
             )
 
         assert response.status_code == 404
@@ -537,7 +537,7 @@ class TestAuthenticationReplay:
                 "/pages/info",
                 json={"pageId": "missing"},
                 retry_safe=True,
-                allowed_statuses=frozenset({404}),
+                allowed_error_statuses=frozenset({404}),
             )
 
         requests = [request for request in httpx_mock.get_requests() if str(request.url) == url]

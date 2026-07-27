@@ -145,6 +145,19 @@ This safeguard is a preflight check, not atomic compare-and-swap. Current Docmos
 endpoints do not accept a conditional revision token, so an edit racing after the check can still
 be overwritten.
 
+Sync uses Docmost's server-side Markdown conversion as the canonical local representation. Every
+pull pairs that Markdown with the same page revision's exact ProseMirror JSON, stores the raw source
+under `.docmost/raw-pages/`, and records editor features that Markdown cannot preserve. Concurrent
+page changes during pull are retried. If a local content or attachment change would replace a page
+containing protected features (for example mentions, comments, columns, transclusions, embeds,
+alignment, colors, or merged cells), `sync push` stops before making any server changes. Guarded
+pages are fetched again immediately before replacement so rich content added in Docmost after the
+last pull is also protected.
+Title, icon, and parent-only changes remain safe. Manifests from older CLI versions remain usable;
+run a fresh pull to enable the rich-content guard for those pages. If a successful server response
+contains no canonical Markdown, pull still produces readable compatibility output but protects
+that page from content pushes because the compatibility converter is not lossless.
+
 ## Configuration
 
 ### Config file location

@@ -73,7 +73,7 @@ def fetch_server_page(
         "/pages/info",
         json={"pageId": page_id},
         retry_safe=True,
-        allowed_statuses=_REVISION_ALLOWED_STATUSES,
+        allowed_error_statuses=_REVISION_ALLOWED_STATUSES,
     )
     if response.status_code == 404:
         return None
@@ -106,7 +106,7 @@ def fetch_server_page(
             "/pages/content",
             json={"pageId": page_id},
             retry_safe=True,
-            allowed_statuses=_REVISION_ALLOWED_STATUSES,
+            allowed_error_statuses=_REVISION_ALLOWED_STATUSES,
         )
         if content_response.status_code == 404:
             print_error(
@@ -150,7 +150,7 @@ def fetch_server_attachment(
         "/files/info",
         json={"attachmentId": attachment_id},
         retry_safe=True,
-        allowed_statuses=_REVISION_ALLOWED_STATUSES,
+        allowed_error_statuses=_REVISION_ALLOWED_STATUSES,
     )
     if response.status_code == 404:
         return None

@@ -67,7 +67,7 @@ class DocmostClient:
         *,
         retry_safe: bool = False,
         error_messages: Mapping[int, str] | None = None,
-        allowed_statuses: frozenset[int] = frozenset(),
+        allowed_error_statuses: frozenset[int] = frozenset(),
         body_replayable: bool = True,
     ) -> httpx.Response:
         """Send a request with authentication and mutation-safe retry handling.
@@ -82,7 +82,8 @@ class DocmostClient:
             request_factory: Creates a fresh, complete request for every attempt.
             retry_safe: Whether the caller guarantees the request is safe to replay.
             error_messages: Optional status-specific error messages.
-            allowed_statuses: Non-success response codes to return to the caller.
+            allowed_error_statuses: Error responses that should be returned to
+                the caller after retry handling instead of being translated.
             body_replayable: Whether rebuilding reproduces the complete request body.
 
         Returns:
@@ -164,7 +165,7 @@ class DocmostClient:
                 request = request_factory()
                 continue
 
-            if response.status_code not in allowed_statuses:
+            if response.status_code not in allowed_error_statuses:
                 self._handle_error(
                     response,
                     method=request.method,
@@ -385,7 +386,7 @@ class DocmostClient:
         *,
         raise_on_error: bool = True,
         retry_safe: bool = False,
-        allowed_statuses: frozenset[int] = frozenset(),
+        allowed_error_statuses: frozenset[int] = frozenset(),
     ) -> httpx.Response:
         """POST request returning raw httpx.Response.
 
@@ -396,7 +397,8 @@ class DocmostClient:
             json: JSON body to send.
             raise_on_error: If False, skip error handling (for endpoint probes).
             retry_safe: Explicitly allow retries for a replay-safe POST.
-            allowed_statuses: Non-success response codes to return when error handling is enabled.
+            allowed_error_statuses: Error responses to return after retries
+                instead of translating them into CLI errors.
         """
         url = self.api_url(path)
 
@@ -407,7 +409,7 @@ class DocmostClient:
             return self._send_with_retry(
                 request_factory,
                 retry_safe=retry_safe,
-                allowed_statuses=allowed_statuses,
+                allowed_error_statuses=allowed_error_statuses,
             )
 
         request = request_factory()

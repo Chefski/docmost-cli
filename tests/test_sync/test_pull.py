@@ -12,6 +12,7 @@ if TYPE_CHECKING:
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.config.settings import DocmostSettings
+from docmost_cli.convert.prosemirror_to_md import convert_to_markdown
 from docmost_cli.sync.manifest import (
     MANIFEST_FILENAME,
     MANIFEST_VERSION,
@@ -143,10 +144,13 @@ def _mock_page_content(
     page_id: str,
     title: str,
     pm_content: dict | None = None,
+    markdown_content: str | None = None,
+    canonical_available: bool = True,
+    updated_at: str = "2026-01-01T00:00:00.000Z",
     *,
     parent_page_id: str | None = None,
 ) -> None:
-    """Add a mock for the canonical page-state fetch."""
+    """Add matching raw-content and canonical-Markdown page responses."""
     content = pm_content or _PM_DOC
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/info",
@@ -156,10 +160,37 @@ def _mock_page_content(
             "icon": "",
             "parentPageId": parent_page_id,
             "spaceId": "space-1",
+            "updatedAt": updated_at,
             "content": content,
-            "updatedAt": "2026-01-01T00:00:00.000Z",
         },
     )
+    # Rich-content-safe pull asks the server to perform canonical conversion.
+    if canonical_available:
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": page_id,
+                "title": title,
+                "spaceId": "space-1",
+                "updatedAt": updated_at,
+                "content": (
+                    markdown_content
+                    if markdown_content is not None
+                    else convert_to_markdown(content)
+                ),
+            },
+        )
+    else:
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": page_id,
+                "title": title,
+                "spaceId": "space-1",
+                "updatedAt": updated_at,
+                "content": None,
+            },
+        )
 
 
 class TestPullEmptySpace:
@@ -236,6 +267,156 @@ class TestPullCreatesFiles:
             }
         )
         assert manifest["pages"]["p1"]["server_revision"] == expected_revision
+
+    def test_uses_server_markdown_and_records_raw_source_guard(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        rich_doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [
+                        {
+                            "type": "mention",
+                            "attrs": {"id": "user-1", "label": "Ada"},
+                        }
+                    ],
+                }
+            ],
+        }
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Rich Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        _mock_page_content(
+            httpx_mock,
+            "p1",
+            "Rich Page",
+            rich_doc,
+            markdown_content="Server canonical output\n",
+        )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        page_text = next(target.glob("*.md")).read_text(encoding="utf-8")
+        assert page_text.endswith("Server canonical output\n")
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        guard = manifest["pages"]["p1"]["rich_content"]
+        assert guard["unsafe_features"] == ["node:mention"]
+        snapshot = target / guard["snapshot_path"]
+        assert json.loads(snapshot.read_text(encoding="utf-8")) == rich_doc
+
+    def test_local_converter_fallback_is_protected(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Fallback Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        _mock_page_content(
+            httpx_mock,
+            "p1",
+            "Fallback Page",
+            canonical_available=False,
+        )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        assert manifest["pages"]["p1"]["rich_content"]["unsafe_features"] == [
+            "conversion:local-fallback"
+        ]
+
+    def test_retries_when_raw_and_markdown_revisions_differ(
+        self,
+        httpx_mock,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        _mock_resolve_space(httpx_mock)
+        _mock_sidebar_pages(
+            httpx_mock,
+            [
+                {
+                    "id": "p1",
+                    "title": "Changing Page",
+                    "icon": "",
+                    "hasChildren": False,
+                    "children": [],
+                }
+            ],
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": "p1",
+                "title": "Changing Page",
+                "updatedAt": "revision-1",
+                "content": _PM_DOC,
+            },
+        )
+        httpx_mock.add_response(
+            url=f"{_TEST_URL}/api/pages/info",
+            json={
+                "id": "p1",
+                "title": "Changing Page",
+                "updatedAt": "revision-2",
+                "content": "stale pairing",
+            },
+        )
+        second_doc = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": "Second revision"}],
+                }
+            ],
+        }
+        _mock_page_content(
+            httpx_mock,
+            "p1",
+            "Changing Page",
+            second_doc,
+            markdown_content="Second revision\n",
+            updated_at="revision-2",
+        )
+
+        with _make_client() as client:
+            pull_space(client, "test", target)
+
+        page_text = next(target.glob("*.md")).read_text(encoding="utf-8")
+        assert page_text.endswith("Second revision\n")
+        manifest = json.loads((target / MANIFEST_FILENAME).read_text(encoding="utf-8"))
+        snapshot = target / manifest["pages"]["p1"]["rich_content"]["snapshot_path"]
+        assert json.loads(snapshot.read_text(encoding="utf-8")) == second_doc
 
 
 class TestPullAttachments:
