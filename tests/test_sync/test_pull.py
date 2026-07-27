@@ -741,6 +741,9 @@ class TestPullAtomicPublication:
         staging = _temporary_sibling(target, "pull-staging")
         (staging / "new.txt").write_text("new", encoding="utf-8")
         real_exchange = _atomic_exchange_directories
+        if not real_exchange(staging, target):
+            pytest.skip("atomic directory exchange is not available on this filesystem")
+        assert real_exchange(staging, target)
         exchange_count = 0
 
         def edit_then_exchange(left: Path, right: Path) -> bool:
@@ -765,6 +768,94 @@ class TestPullAtomicPublication:
         assert (target / "late-edit.txt").read_text(encoding="utf-8") == "keep"
         assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
         assert not _publish_journal_path(target).exists()
+
+    def test_failed_conflict_rollback_is_never_auto_published(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        expected_snapshot = _snapshot_target(target)
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_exchange = _atomic_exchange_directories
+        exchange_count = 0
+
+        def fail_rollback(left: Path, right: Path) -> bool:
+            nonlocal exchange_count
+            exchange_count += 1
+            if exchange_count == 1:
+                (target / "late-edit.txt").write_text("keep", encoding="utf-8")
+                return real_exchange(left, right)
+            return False
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            fail_rollback,
+        )
+
+        with pytest.raises(RuntimeError, match="changed while"):
+            _publish_staged_pull(staging, target, expected_snapshot=expected_snapshot)
+
+        assert (target / "new.txt").read_text(encoding="utf-8") == "new"
+        assert (staging / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (staging / "late-edit.txt").read_text(encoding="utf-8") == "keep"
+        journal_path = _publish_journal_path(target)
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+        assert payload["phase"] == "conflict"
+        _ACTIVE_PUBLISH_TOKENS.discard(payload["owner_token"])
+
+        with pytest.raises(RuntimeError, match="preserved publication conflict"):
+            _recover_interrupted_publish(target)
+
+        assert (target / "new.txt").exists()
+        assert (staging / "late-edit.txt").exists()
+
+    def test_conflict_rollback_preserves_intervening_target_replacement(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        expected_snapshot = _snapshot_target(target)
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        generated_snapshot = tmp_path / "generated-snapshot"
+        real_exchange = _atomic_exchange_directories
+        if not real_exchange(staging, target):
+            pytest.skip("atomic directory exchange is not available on this filesystem")
+        assert real_exchange(staging, target)
+        exchange_count = 0
+
+        def replace_before_rollback(left: Path, right: Path) -> bool:
+            nonlocal exchange_count
+            exchange_count += 1
+            if exchange_count == 1:
+                (target / "late-edit.txt").write_text("keep", encoding="utf-8")
+                return real_exchange(left, right)
+            os.replace(target, generated_snapshot)
+            target.mkdir()
+            (target / "replacement.txt").write_text("replacement", encoding="utf-8")
+            return real_exchange(left, right)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            replace_before_rollback,
+        )
+
+        with pytest.raises(RuntimeError, match="changed while"):
+            _publish_staged_pull(staging, target, expected_snapshot=expected_snapshot)
+
+        assert (target / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (target / "late-edit.txt").read_text(encoding="utf-8") == "keep"
+        assert (staging / "replacement.txt").read_text(encoding="utf-8") == "replacement"
+        assert (generated_snapshot / "new.txt").read_text(encoding="utf-8") == "new"
+        assert _staging_is_recovery_data(target, staging)
+        assert _publish_journal_path(target).exists()
 
     def test_active_publication_is_not_recovered(self, tmp_path: Path) -> None:
         target = tmp_path / "test"

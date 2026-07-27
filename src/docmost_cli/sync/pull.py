@@ -2,6 +2,7 @@
 
 import ctypes
 import errno
+import hashlib
 import json
 import os
 import shutil
@@ -282,6 +283,12 @@ def _assert_target_unchanged(
         )
 
 
+def _snapshot_digest(snapshot: dict[str, tuple[Any, ...]] | None) -> str:
+    """Return a deterministic digest for a target snapshot."""
+    serialized = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
 def _atomic_exchange_directories(left: Path, right: Path) -> bool:
     """Atomically exchange two directories when the operating system supports it."""
     if sys.platform not in {"darwin", "linux"}:
@@ -513,6 +520,7 @@ def _write_publish_journal(
         "owner_pid": os.getpid(),
         "owner_token": token,
         "target_identity": _identity_payload(target),
+        "target_snapshot_digest": _snapshot_digest(_snapshot_target(target)),
         "staging_identity": _identity_payload(staging_path),
         "backup_identity": _identity_payload(backup_path) if backup_path is not None else None,
     }
@@ -636,8 +644,11 @@ def _recover_interrupted_publish(target: Path) -> None:
         not isinstance(payload, dict)
         or payload.get("version") != 2
         or payload.get("target") != target.name
-        or payload.get("phase") not in {"prepared", "target-moved", "published"}
+        or payload.get("phase") not in {"prepared", "target-moved", "published", "conflict"}
     ):
+        raise RuntimeError(f"invalid pull recovery journal '{journal_path}'")
+    target_snapshot_digest = payload.get("target_snapshot_digest")
+    if not isinstance(target_snapshot_digest, str):
         raise RuntimeError(f"invalid pull recovery journal '{journal_path}'")
     owner_pid = payload.get("owner_pid")
     owner_token = payload.get("owner_token")
@@ -665,6 +676,11 @@ def _recover_interrupted_publish(target: Path) -> None:
 
     if target_identity is None or staging_identity is None:
         raise RuntimeError(f"incomplete pull recovery journal '{journal_path}'")
+    if payload["phase"] == "conflict":
+        raise RuntimeError(
+            f"pull recovery found a preserved publication conflict for '{target}'; "
+            f"inspect '{journal_path}' and its staging/backup paths"
+        )
 
     if actual_target is None:
         if backup_path is None or actual_backup != target_identity:
@@ -684,6 +700,15 @@ def _recover_interrupted_publish(target: Path) -> None:
         if payload["phase"] != "published" and not old_snapshot_is_identified:
             raise RuntimeError(
                 f"pull recovery cannot identify the previous snapshot for '{target}'; "
+                f"preserving all transaction data for inspection"
+            )
+        old_snapshot_path = staging_path if actual_staging == target_identity else backup_path
+        if (
+            old_snapshot_path is not None
+            and _snapshot_digest(_snapshot_target(old_snapshot_path)) != target_snapshot_digest
+        ):
+            raise RuntimeError(
+                f"pull recovery found local changes in the previous snapshot for '{target}'; "
                 f"preserving all transaction data for inspection"
             )
         if payload["phase"] != "published":
@@ -747,6 +772,7 @@ def _publish_staged_pull(
             _remove_publish_journal(target)
             raise
 
+    staged_snapshot = _snapshot_target(staging_path)
     if _atomic_exchange_directories(staging_path, target):
         _sync_directory(target.parent)
         if expected_snapshot is not _SNAPSHOT_UNSET:
@@ -754,10 +780,17 @@ def _publish_staged_pull(
                 assert expected_snapshot is None or isinstance(expected_snapshot, dict)
                 _assert_target_unchanged(staging_path, expected_snapshot)
             except BaseException:
+                with suppress(OSError):
+                    _update_publish_journal(target, journal, "conflict")
                 try:
-                    if _atomic_exchange_directories(staging_path, target):
+                    can_rollback = (
+                        _path_identity(target) == _payload_identity(journal, "staging_identity")
+                        and _snapshot_target(target) == staged_snapshot
+                    )
+                    if can_rollback and _atomic_exchange_directories(staging_path, target):
                         _sync_directory(target.parent)
-                        _remove_publish_journal(target)
+                        if _snapshot_target(staging_path) == staged_snapshot:
+                            _remove_publish_journal(target)
                 except OSError:
                     pass
                 raise
