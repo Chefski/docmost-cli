@@ -35,7 +35,7 @@ MANIFEST_FILENAME = ".docmost-manifest.json"
 MANIFEST_VERSION = 3
 SERVER_REVISION_VERSION = 1
 
-_UNSAFE_CHARS_RE = re.compile(r'[/\\:*?"<>|]')
+_UNSAFE_CHARS_RE = re.compile(r'[/\\:*?"<>|\x00-\x1f\x7f]')
 _MULTI_DASH_RE = re.compile(r"-{2,}")
 _MAX_TITLE_LENGTH = 80
 _ID_PREFIX_LENGTH = 8
