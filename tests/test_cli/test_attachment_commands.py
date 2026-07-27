@@ -60,14 +60,12 @@ class TestAttachmentUpload:
 class TestAttachmentSearch:
     def test_search_json(self, tmp_config, httpx_mock) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/attachments/search",
+            url="https://docs.example.com/api/search-attachments",
             json={
-                "data": {
-                    "items": [
-                        {"id": "att-1", "fileName": "diagram.png", "type": "image/png"},
-                        {"id": "att-2", "fileName": "screenshot.jpg", "type": "image/jpeg"},
-                    ]
-                }
+                "items": [
+                    {"id": "att-1", "fileName": "diagram.png", "highlight": "diagram"},
+                    {"id": "att-2", "fileName": "screenshot.jpg", "highlight": "diagram"},
+                ]
             },
         )
         result = runner.invoke(
@@ -86,13 +84,11 @@ class TestAttachmentSearch:
             json={"data": {"items": [{"id": "space-uuid", "slug": "eng", "name": "Eng"}]}},
         )
         httpx_mock.add_response(
-            url="https://docs.example.com/api/attachments/search",
+            url="https://docs.example.com/api/search-attachments",
             json={
-                "data": {
-                    "items": [
-                        {"id": "att-3", "fileName": "logo.svg", "type": "image/svg+xml"},
-                    ]
-                }
+                "items": [
+                    {"id": "att-3", "fileName": "logo.svg", "highlight": "company logo"},
+                ]
             },
         )
         result = runner.invoke(

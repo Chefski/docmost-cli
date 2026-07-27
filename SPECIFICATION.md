@@ -169,9 +169,10 @@ docmost-cli page delete <page-id>                 # Delete a page (requires conf
   # stdout: deleted page ID | stderr: confirmation message
 
 docmost-cli page move <page-id>                   # Move a page
-  --parent <page-id>                          # New parent (omit for root)
-  --space <space-slug>                        # Move to different space
-  --position <int>                            # Position among siblings
+  --parent <page-id>                          # New parent
+  --root                                      # Move to the space root
+  --space <space-slug>                        # Cannot combine with --parent, --root, or --position
+  --position <fractional-index>               # Position among siblings (5-12 chars)
 
 docmost-cli page duplicate <page-id>              # Duplicate a page
 
@@ -232,10 +233,10 @@ docmost-cli comment update <comment-id>           # Edit a comment
 ### 4.6 `docmost-cli search`
 
 ```
-docmost-cli search <query>                        # Full-text search
+docmost-cli search query <query>                  # Full-text page search
   --space <space-slug>                        # Filter by space
-  --limit N                                   # Max results (default: 20)
-  --type page|attachment                      # Filter by result type
+  --limit N                                   # Max results (server default: 25)
+  --offset N                                  # Number of results to skip
   --json                                      # Output as JSON array
 ```
 
@@ -393,17 +394,17 @@ POST /auth/logout
 **Pages:**
 ```
 POST /pages/info          → {pageId, format?} → page metadata/content
-POST /pages/create        → {title, spaceId, parentPageId?, icon?, content?}
+POST /pages/create        → {title, spaceId, parentPageId?, icon?, content?, format?}
 POST /pages/update        → {pageId, title?, icon?, content?, format?, operation?}
 POST /pages/delete        → {pageId}
-POST /pages/move          → {pageId, parentPageId?, position?, spaceId?}
-POST /pages/duplicate     → {pageId}
-POST /pages/copy          → {pageId, spaceId}
+POST /pages/move          → {pageId, parentPageId: string|null, position}
+POST /pages/move-to-space → {pageId, spaceId}
+POST /pages/duplicate     → {pageId, spaceId?}
 POST /pages/sidebar-pages → {spaceId} → tree structure
 POST /pages/recent        → {spaceId, limit?, cursor?}
 POST /pages/children      → {pageId, limit?, cursor?}
 POST /pages/history       → {pageId, limit?, cursor?}
-POST /pages/import        → multipart: file (md/html), spaceId, parentPageId?
+POST /pages/import        → multipart: file (md/html), spaceId
 POST /pages/import-zip    → multipart: file (zip), spaceId, source="generic"
 POST /pages/export        → {pageId, format, includeAttachments?, includeChildren?}
 ```
@@ -430,12 +431,12 @@ POST /comments/delete     → {commentId}
 
 **Search:**
 ```
-POST /search              → {query, spaceId?, type?, limit?, cursor?}
+POST /search              → {query, spaceId?, limit?, offset?}
 ```
 
 **Attachments:**
 ```
-POST /attachments/search  → {query, spaceId?}
+POST /search-attachments  → {query, spaceId?} (Enterprise attachment indexing)
 POST /files/upload        → multipart: file, pageId, attachmentId? (stable replacement)
 POST /files/info          → {attachmentId}
 GET  /files/{id}/{name}   → authenticated file download
@@ -484,9 +485,20 @@ HTTP 401 → Re-authenticate (session auth) or report invalid API key
 HTTP 403 → Permission denied — include space/page context in error
 HTTP 404 → Resource not found — suggest checking ID/slug
 HTTP 422 → Validation error — show server's error message
-HTTP 429 → Rate limited — retry with backoff
-HTTP 5xx → Server error — show status + suggest checking Docmost logs
+HTTP 429 → Rate limited — retry replay-safe requests with backoff
+HTTP 5xx → Server error — retry replay-safe requests; never automatically replay ambiguous mutations
 ```
+
+Automatic transient retries are limited to idempotent HTTP methods and requests
+explicitly marked safe to replay. Non-idempotent create, import, duplicate, and
+upload requests are not retried after 429, 5xx, timeout, or other ambiguous
+failures because the server may already have committed the change. Session
+authentication may replay a request once after a 401 because the unauthorized
+request was rejected before the operation was accepted. `Retry-After` is honored
+for retryable responses, with a 60-second maximum delay.
+One-shot streaming request bodies are sent only once; callers must supply bytes,
+a list or tuple of byte chunks, or seekable multipart files before a request can
+be replayed.
 
 ---
 
@@ -525,12 +537,18 @@ This is the critical path for `page get`. The converter must handle all Docmost 
 
 ### 6.2 Markdown → ProseMirror
 
-For `page create` and `page update`. Two strategies available:
+For `page create`, `page import`, and `page update`:
 
-1. **Create pages through Docmost's import endpoint** (`POST /pages/import`)
-   — Send Markdown as a file and let Docmost perform the initial conversion.
+1. **Create pages through Docmost's page endpoint** (`POST /pages/create`)
+   with `format: "markdown"`. The same request sets the title, space, optional
+   parent and icon, and initial content.
 
-2. **Update existing pages through the shared page endpoint**
+2. **Import Markdown or HTML through Docmost's import endpoint**
+   (`POST /pages/import`). The endpoint consumes the file and `spaceId`;
+   explicit title and parent overrides are applied afterward through
+   `POST /pages/update` and `POST /pages/move`.
+
+3. **Update existing pages through the shared page endpoint**
    (`POST /pages/update`) with `format: "markdown"`, the page content, and an
    `operation` of `replace`, `append`, or `prepend`. This path is available on
    both Community and Enterprise editions and preserves the page ID.
@@ -688,13 +706,13 @@ def print_error(message: str, exit_code: int = 1) -> NoReturn:
 - [x] `docmost-cli space list` (with `--json`)
 - [x] `docmost-cli page list <space>` (with `--json`)
 - [x] `docmost-cli page get <id>` with ProseMirror→Markdown conversion (with `--meta`)
-- [x] `docmost-cli search <query>` (with `--json`)
+- [x] `docmost-cli search query <query>` (with `--json`)
 - [x] Basic error handling with exit codes
 
 ### Phase 2: Write Operations
 > **Edition-aware**: All write operations use endpoints shared by both editions.
 > Content updates use `POST /pages/update`, preserving page and attachment IDs.
-- [x] `docmost-cli page create` (via import endpoint — both editions)
+- [x] `docmost-cli page create` (via `/pages/create` — both editions)
 - [x] `docmost-cli page update` (title and content: both editions)
 - [x] `docmost-cli page delete` (with confirmation — both editions)
 - [x] `docmost-cli page move` (both editions)
@@ -864,5 +882,6 @@ These items need investigation during implementation. Update this section as ans
       ProseMirror JSON? *Current approach*: Send content as provided; wrap in
       minimal ProseMirror JSON if API rejects plain text.
 - [x] **Import endpoint fields**: `POST /pages/import` uses multipart `file` and
-      `spaceId`; `POST /pages/import-zip` additionally requires `source=generic`
+      `spaceId`; title and parent overrides use page update/move calls after
+      import. `POST /pages/import-zip` additionally requires `source=generic`
       for portable Docmost ZIP archives.

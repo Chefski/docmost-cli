@@ -13,19 +13,17 @@ def search(
     query: str,
     *,
     space_id: str | None = None,
-    result_type: str | None = None,
     limit: int | None = None,
-    cursor: str | None = None,
+    offset: int | None = None,
 ) -> dict[str, Any]:
-    """Full-text search across the wiki.
+    """Full-text search across wiki pages.
 
     Args:
         client: Authenticated Docmost client.
         query: Search query string.
         space_id: Optional space UUID to filter results.
-        result_type: Optional type filter ("page" or "attachment").
-        limit: Max results (default server-side, typically 20).
-        cursor: Pagination cursor.
+        limit: Maximum number of results (default server-side: 25).
+        offset: Number of results to skip.
 
     Returns:
         Raw API response dict.
@@ -33,8 +31,7 @@ def search(
     body = build_body(
         {"query": query},
         spaceId=space_id,
-        type=result_type,
         limit=limit,
-        cursor=cursor,
+        offset=offset,
     )
-    return client.post("/search", json=body)
+    return client.post("/search", json=body, retry_safe=True)

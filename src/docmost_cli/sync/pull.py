@@ -8,6 +8,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import uuid
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -19,6 +20,7 @@ from docmost_cli.output.formatter import _err_console as _err
 __all__ = ["PullResult", "flatten_tree", "pull_space"]
 
 _SNAPSHOT_UNSET = object()
+_ACTIVE_PUBLISH_TOKENS: set[str] = set()
 
 
 @dataclass
@@ -336,53 +338,137 @@ def _publish_journal_path(target: Path) -> Path:
 
 
 def _sync_directory(path: Path) -> None:
-    """Best-effort fsync of a directory after journal changes."""
-    with suppress(OSError):
-        descriptor = os.open(path, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+    """Durably flush directory-entry changes where the platform supports it."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
-def _write_publish_journal(
-    target: Path,
-    staging_path: Path,
-    backup_path: Path | None,
-) -> None:
-    """Persist enough sibling names to recover an interrupted publication."""
-    journal_path = _publish_journal_path(target)
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f"{journal_path.name}.tmp-",
-        dir=target.parent,
-    )
-    temporary_path = Path(temporary_name)
-    payload = {
-        "version": 1,
-        "target": target.name,
-        "staging": staging_path.name,
-        "backup": backup_path.name if backup_path else None,
-    }
+def _path_identity(path: Path) -> tuple[int, int] | None:
+    """Return a stable filesystem identity without following symlinks."""
+    try:
+        path_stat = path.lstat()
+    except FileNotFoundError:
+        return None
+    return path_stat.st_dev, path_stat.st_ino
+
+
+def _payload_identity(payload: dict[str, Any], key: str) -> tuple[int, int] | None:
+    """Read a validated filesystem identity from a recovery payload."""
+    value = payload.get(key)
+    if value is None:
+        return None
+    if (
+        not isinstance(value, list)
+        or len(value) != 2
+        or not all(isinstance(part, int) for part in value)
+    ):
+        raise RuntimeError(f"invalid {key} in pull recovery journal")
+    return value[0], value[1]
+
+
+def _identity_payload(path: Path) -> list[int] | None:
+    """Serialize a path identity for a recovery payload."""
+    identity = _path_identity(path)
+    return list(identity) if identity is not None else None
+
+
+def _process_is_running(process_id: int) -> bool:
+    """Return whether a process ID still refers to a live process."""
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _write_json_file(path: Path, payload: dict[str, Any], *, exclusive: bool) -> None:
+    """Write and fsync one JSON object, optionally requiring a new file."""
+    flags = os.O_WRONLY | os.O_CREAT
+    if exclusive:
+        flags |= os.O_EXCL
+    else:
+        flags |= os.O_TRUNC
+    descriptor = os.open(path, flags, 0o600)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as journal:
             json.dump(payload, journal, sort_keys=True)
             journal.write("\n")
             journal.flush()
             os.fsync(journal.fileno())
-        os.link(temporary_path, journal_path)
+    except BaseException:
+        with suppress(OSError):
+            os.close(descriptor)
+        raise
+
+
+def _write_publish_journal(
+    target: Path,
+    staging_path: Path,
+    backup_path: Path | None,
+) -> dict[str, Any]:
+    """Persist enough sibling names to recover an interrupted publication."""
+    journal_path = _publish_journal_path(target)
+    token = uuid.uuid4().hex
+    payload = {
+        "version": 2,
+        "target": target.name,
+        "staging": staging_path.name,
+        "backup": backup_path.name if backup_path else None,
+        "phase": "prepared",
+        "owner_pid": os.getpid(),
+        "owner_token": token,
+        "target_identity": _identity_payload(target),
+        "staging_identity": _identity_payload(staging_path),
+        "backup_identity": _identity_payload(backup_path) if backup_path is not None else None,
+    }
+    try:
+        _write_json_file(journal_path, payload, exclusive=True)
+        _sync_directory(target.parent)
     except FileExistsError as exc:
         raise RuntimeError(
             f"another pull publication or recovery is active for '{target}'"
         ) from exc
+    except BaseException:
+        with suppress(FileNotFoundError):
+            journal_path.unlink()
+        raise
+    _ACTIVE_PUBLISH_TOKENS.add(token)
+    return payload
+
+
+def _update_publish_journal(target: Path, payload: dict[str, Any], phase: str) -> None:
+    """Advance and durably persist a publication phase."""
+    journal_path = _publish_journal_path(target)
+    temporary_path = journal_path.with_name(f"{journal_path.name}.tmp-{uuid.uuid4().hex}")
+    updated = {**payload, "phase": phase}
+    try:
+        _write_json_file(temporary_path, updated, exclusive=True)
+        os.replace(temporary_path, journal_path)
+        _sync_directory(target.parent)
     finally:
         with suppress(FileNotFoundError):
             temporary_path.unlink()
-    _sync_directory(target.parent)
+    payload.clear()
+    payload.update(updated)
 
 
 def _remove_publish_journal(target: Path) -> None:
     """Remove a completed publication journal durably."""
     journal_path = _publish_journal_path(target)
+    token: str | None = None
+    try:
+        payload = json.loads(journal_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("owner_token"), str):
+            token = payload["owner_token"]
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        pass
     try:
         journal_path.unlink()
     except FileNotFoundError:
@@ -391,7 +477,28 @@ def _remove_publish_journal(target: Path) -> None:
         _err.print(
             f"[yellow]Warning:[/yellow] could not remove recovery journal '{journal_path}': {exc}"
         )
-    _sync_directory(target.parent)
+    try:
+        _sync_directory(target.parent)
+    except OSError as exc:
+        _err.print(
+            f"[yellow]Warning:[/yellow] could not sync journal removal in '{target.parent}': {exc}"
+        )
+    if token is not None:
+        _ACTIVE_PUBLISH_TOKENS.discard(token)
+
+
+def _release_current_publish_ownership(target: Path) -> None:
+    """Release an in-process ownership marker after publication unwinds."""
+    try:
+        payload = json.loads(_publish_journal_path(target).read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return
+    if (
+        isinstance(payload, dict)
+        and payload.get("owner_pid") == os.getpid()
+        and isinstance(payload.get("owner_token"), str)
+    ):
+        _ACTIVE_PUBLISH_TOKENS.discard(payload["owner_token"])
 
 
 def _journal_sibling(
@@ -426,10 +533,20 @@ def _recover_interrupted_publish(target: Path) -> None:
 
     if (
         not isinstance(payload, dict)
-        or payload.get("version") != 1
+        or payload.get("version") != 2
         or payload.get("target") != target.name
+        or payload.get("phase") not in {"prepared", "target-moved", "published"}
     ):
         raise RuntimeError(f"invalid pull recovery journal '{journal_path}'")
+    owner_pid = payload.get("owner_pid")
+    owner_token = payload.get("owner_token")
+    if not isinstance(owner_pid, int) or not isinstance(owner_token, str):
+        raise RuntimeError(f"invalid pull recovery journal '{journal_path}'")
+    if owner_token in _ACTIVE_PUBLISH_TOKENS or (
+        owner_pid != os.getpid() and _process_is_running(owner_pid)
+    ):
+        raise RuntimeError(f"another pull publication is active for '{target}'")
+
     staging_path = _journal_sibling(target, payload.get("staging"), purpose="pull-staging")
     backup_path = _journal_sibling(
         target,
@@ -438,21 +555,53 @@ def _recover_interrupted_publish(target: Path) -> None:
         optional=True,
     )
     assert staging_path is not None
+    target_identity = _payload_identity(payload, "target_identity")
+    staging_identity = _payload_identity(payload, "staging_identity")
+    backup_identity = _payload_identity(payload, "backup_identity")
+    actual_target = _path_identity(target)
+    actual_staging = _path_identity(staging_path)
+    actual_backup = _path_identity(backup_path) if backup_path is not None else None
 
-    target_exists = target.exists() or target.is_symlink()
-    backup_exists = backup_path is not None and (backup_path.exists() or backup_path.is_symlink())
-    if not target_exists:
-        if not backup_exists or backup_path is None:
+    if target_identity is None or staging_identity is None:
+        raise RuntimeError(f"incomplete pull recovery journal '{journal_path}'")
+
+    if actual_target is None:
+        if backup_path is None or actual_backup != target_identity:
             raise RuntimeError(
-                f"pull recovery could not restore missing target '{target}'; "
-                f"inspect '{journal_path}'"
+                f"pull recovery cannot identify the previous target for '{target}'; "
+                f"preserving all transaction data for inspection"
             )
         os.replace(backup_path, target)
-        backup_exists = False
+        _sync_directory(target.parent)
+        actual_target = target_identity
+        actual_backup = None
 
-    if staging_path.exists() or staging_path.is_symlink():
+    if actual_target == staging_identity:
+        old_snapshot_is_identified = (
+            actual_staging == target_identity or actual_backup == target_identity
+        )
+        if payload["phase"] != "published" and not old_snapshot_is_identified:
+            raise RuntimeError(
+                f"pull recovery cannot identify the previous snapshot for '{target}'; "
+                f"preserving all transaction data for inspection"
+            )
+    elif actual_target != target_identity:
+        raise RuntimeError(
+            f"pull recovery found an unexpected replacement at '{target}'; "
+            f"preserving all transaction data for inspection"
+        )
+
+    if actual_staging is not None:
+        if actual_staging not in {target_identity, staging_identity}:
+            raise RuntimeError(
+                f"pull recovery found an unexpected staging directory '{staging_path}'"
+            )
         _remove_tree(staging_path)
-    if backup_exists and backup_path is not None:
+    if backup_path is not None and actual_backup is not None:
+        if actual_backup not in {target_identity, backup_identity}:
+            raise RuntimeError(
+                f"pull recovery found an unexpected backup directory '{backup_path}'"
+            )
         _remove_tree(backup_path)
     _remove_publish_journal(target)
 
@@ -473,7 +622,7 @@ def _publish_staged_pull(
 
     backup_path = _temporary_sibling(target, "pull-backup")
     try:
-        _write_publish_journal(target, staging_path, backup_path)
+        journal = _write_publish_journal(target, staging_path, backup_path)
     except BaseException:
         _remove_tree(backup_path)
         raise
@@ -487,6 +636,22 @@ def _publish_staged_pull(
             raise
 
     if _atomic_exchange_directories(staging_path, target):
+        try:
+            _sync_directory(target.parent)
+            if expected_snapshot is not _SNAPSHOT_UNSET:
+                assert expected_snapshot is None or isinstance(expected_snapshot, dict)
+                _assert_target_unchanged(staging_path, expected_snapshot)
+            _update_publish_journal(target, journal, "published")
+        except BaseException:
+            try:
+                if _path_identity(target) == _payload_identity(
+                    journal, "staging_identity"
+                ) and _atomic_exchange_directories(staging_path, target):
+                    _sync_directory(target.parent)
+                    _remove_publish_journal(target)
+            except OSError:
+                pass
+            raise
         try:
             _remove_tree(staging_path)
         except OSError as exc:
@@ -508,12 +673,29 @@ def _publish_staged_pull(
         _remove_publish_journal(target)
         raise
     os.replace(target, backup_path)
+    _sync_directory(target.parent)
+    if expected_snapshot is not _SNAPSHOT_UNSET:
+        try:
+            assert expected_snapshot is None or isinstance(expected_snapshot, dict)
+            _assert_target_unchanged(backup_path, expected_snapshot)
+        except BaseException:
+            os.replace(backup_path, target)
+            _sync_directory(target.parent)
+            _remove_publish_journal(target)
+            raise
+    _update_publish_journal(target, journal, "target-moved")
     try:
         os.replace(staging_path, target)
+        _sync_directory(target.parent)
+        _update_publish_journal(target, journal, "published")
     except BaseException:
         try:
-            os.replace(backup_path, target)
-            _remove_publish_journal(target)
+            if not target.exists() and _path_identity(backup_path) == _payload_identity(
+                journal, "target_identity"
+            ):
+                os.replace(backup_path, target)
+                _sync_directory(target.parent)
+                _remove_publish_journal(target)
         except OSError as rollback_error:
             raise RuntimeError(
                 f"pull publication failed and rollback could not restore '{target}'; "
@@ -523,6 +705,7 @@ def _publish_staged_pull(
 
     try:
         _remove_tree(backup_path)
+        _sync_directory(target.parent)
     except OSError as exc:
         _err.print(f"[yellow]Warning:[/yellow] could not remove backup '{backup_path}': {exc}")
     _remove_publish_journal(target)
@@ -612,6 +795,12 @@ def pull_space(
         print_error("The sync target must not be a filesystem root.")
     if target_path.is_symlink():
         print_error(f"Target directory '{dir_path}' must not be a symbolic link.")
+    current_directory = Path.cwd().resolve()
+    resolved_target = target_path.resolve()
+    if current_directory == resolved_target or resolved_target in current_directory.parents:
+        print_error(
+            f"Leave target directory '{dir_path}' before pulling so it can be replaced safely."
+        )
     _recover_interrupted_publish(target_path)
     if target_path.exists() and not target_path.is_dir():
         print_error(f"Target path '{dir_path}' is not a directory.")
@@ -625,7 +814,7 @@ def pull_space(
 
     # 2. Build page tree
     _err.print(f"Fetching page tree for '{space_slug}'...")
-    tree = build_page_tree(client, space_id)
+    tree = build_page_tree(client, space_id, max_depth=None)
 
     # 3. Flatten
     flat_pages = flatten_tree(tree)
@@ -739,6 +928,7 @@ def pull_space(
         )
         published = True
     finally:
+        _release_current_publish_ownership(target_path)
         if not published and (staging_path.exists() or staging_path.is_symlink()):
             try:
                 _remove_tree(staging_path)

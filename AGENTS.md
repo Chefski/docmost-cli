@@ -1,4 +1,4 @@
-# CLAUDE.md — Project Instructions for Claude Code
+# AGENTS.md — Project Instructions for Coding Agents
 
 ## Project
 

@@ -76,11 +76,9 @@ def sync_status_cmd(
             types = ", ".join(ct.value for ct in c.changes if ct.name != "MOVED")
             sys.stdout.write(f"    ~ {c.filename} ({types})\n")
     if diff.moved:
-        move_only = [c for c in diff.moved if c not in diff.modified]
-        if move_only:
-            sys.stdout.write(f"  Moved:     {len(move_only)} file(s)\n")
-            for c in move_only:
-                sys.stdout.write(f"    -> {c.filename}\n")
+        sys.stdout.write(f"  Moved:     {len(diff.moved)} file(s)\n")
+        for c in diff.moved:
+            sys.stdout.write(f"    -> {c.filename}\n")
     if diff.deleted:
         sys.stdout.write(f"  Deleted:   {len(diff.deleted)} file(s)\n")
         for c in diff.deleted:

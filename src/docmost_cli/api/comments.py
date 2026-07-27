@@ -52,7 +52,7 @@ def list_comments(client: DocmostClient, page_id: str) -> dict[str, Any]:
     Returns:
         Raw API response dict.
     """
-    return client.post("/comments", json={"pageId": page_id})
+    return client.post("/comments", json={"pageId": page_id}, retry_safe=True)
 
 
 def create_comment(

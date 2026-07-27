@@ -22,11 +22,14 @@ from docmost_cli.sync.manifest import (
     save_manifest,
 )
 from docmost_cli.sync.pull import (
+    _ACTIVE_PUBLISH_TOKENS,
     PullResult,
     _atomic_exchange_directories,
     _publish_journal_path,
     _publish_staged_pull,
     _recover_interrupted_publish,
+    _snapshot_target,
+    _sync_directory,
     _temporary_sibling,
     _write_publish_journal,
     flatten_tree,
@@ -158,9 +161,8 @@ def _mock_page_content(
     title: str,
     pm_content: dict | None = None,
 ) -> None:
-    """Add mocks for get_page_content (calls /pages/info then /pages/content)."""
+    """Add a /pages/info mock containing page content."""
     content = pm_content or _PM_DOC
-    # get_page_info -> POST /pages/info
     httpx_mock.add_response(
         url=f"{_TEST_URL}/api/pages/info",
         json={
@@ -169,11 +171,6 @@ def _mock_page_content(
             "spaceId": "space-1",
             "content": content,
         },
-    )
-    # post_raw -> POST /pages/content (Enterprise endpoint — return 404 to use fallback)
-    httpx_mock.add_response(
-        url=f"{_TEST_URL}/api/pages/content",
-        status_code=404,
     )
 
 
@@ -583,8 +580,9 @@ class TestPullAtomicPublication:
         (staging / "new.txt").write_text("new", encoding="utf-8")
         backup = _temporary_sibling(target, "pull-backup")
         backup.rmdir()
-        _write_publish_journal(target, staging, backup)
+        journal = _write_publish_journal(target, staging, backup)
         os.replace(target, backup)
+        _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
 
         _recover_interrupted_publish(target)
 
@@ -667,11 +665,6 @@ class TestPullAtomicPublication:
             change_target_during_download,
             url=f"{_TEST_URL}/api/pages/info",
         )
-        httpx_mock.add_response(
-            url=f"{_TEST_URL}/api/pages/content",
-            status_code=404,
-        )
-
         with _make_client() as client, pytest.raises(RuntimeError, match="changed while"):
             pull_space(client, "test", target, force=True)
 
@@ -679,6 +672,122 @@ class TestPullAtomicPublication:
         assert (target / old_filename).exists()
         assert not (target / sanitize_filename("New Page", "same-page")).exists()
         assert not list(tmp_path.glob(".test.pull-*"))
+
+    def test_change_during_atomic_exchange_is_rolled_back(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        expected_snapshot = _snapshot_target(target)
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_exchange = _atomic_exchange_directories
+        exchange_count = 0
+
+        def edit_then_exchange(left: Path, right: Path) -> bool:
+            nonlocal exchange_count
+            exchange_count += 1
+            if exchange_count == 1:
+                (target / "late-edit.txt").write_text("keep", encoding="utf-8")
+            return real_exchange(left, right)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            edit_then_exchange,
+        )
+        if not real_exchange(staging, target):
+            pytest.skip("atomic directory exchange is not available on this filesystem")
+        assert real_exchange(staging, target)
+
+        with pytest.raises(RuntimeError, match="changed while"):
+            _publish_staged_pull(staging, target, expected_snapshot=expected_snapshot)
+
+        assert (target / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (target / "late-edit.txt").read_text(encoding="utf-8") == "keep"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
+        assert not _publish_journal_path(target).exists()
+
+    def test_active_publication_is_not_recovered(self, tmp_path: Path) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        staging = _temporary_sibling(target, "pull-staging")
+        backup = _temporary_sibling(target, "pull-backup")
+        journal = _write_publish_journal(target, staging, backup)
+
+        with pytest.raises(RuntimeError, match="another pull publication is active"):
+            _recover_interrupted_publish(target)
+
+        assert target.exists()
+        assert staging.exists()
+        assert backup.exists()
+        _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
+        _recover_interrupted_publish(target)
+
+    def test_recovery_preserves_backup_when_target_was_recreated(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        backup = _temporary_sibling(target, "pull-backup")
+        backup.rmdir()
+        journal = _write_publish_journal(target, staging, backup)
+        os.replace(target, backup)
+        target.mkdir()
+        (target / "replacement.txt").write_text("replacement", encoding="utf-8")
+        _ACTIVE_PUBLISH_TOKENS.discard(journal["owner_token"])
+
+        with pytest.raises(RuntimeError, match="unexpected replacement"):
+            _recover_interrupted_publish(target)
+
+        assert (target / "replacement.txt").read_text(encoding="utf-8") == "replacement"
+        assert (backup / "old.txt").read_text(encoding="utf-8") == "old"
+        assert (staging / "new.txt").read_text(encoding="utf-8") == "new"
+        assert _publish_journal_path(target).exists()
+
+    def test_fsync_failure_after_publish_preserves_backup_and_journal(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        target.mkdir()
+        (target / "old.txt").write_text("old", encoding="utf-8")
+        staging = _temporary_sibling(target, "pull-staging")
+        (staging / "new.txt").write_text("new", encoding="utf-8")
+        real_sync_directory = _sync_directory
+        sync_count = 0
+
+        def fail_after_second_rename(path: Path) -> None:
+            nonlocal sync_count
+            sync_count += 1
+            if sync_count == 4:
+                raise OSError("simulated directory fsync failure")
+            real_sync_directory(path)
+
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._atomic_exchange_directories",
+            lambda _left, _right: False,
+        )
+        monkeypatch.setattr(
+            "docmost_cli.sync.pull._sync_directory",
+            fail_after_second_rename,
+        )
+
+        with pytest.raises(OSError, match="simulated directory fsync failure"):
+            _publish_staged_pull(staging, target)
+
+        backups = list(tmp_path.glob(".test.pull-backup-*"))
+        assert (target / "new.txt").read_text(encoding="utf-8") == "new"
+        assert len(backups) == 1
+        assert (backups[0] / "old.txt").read_text(encoding="utf-8") == "old"
+        assert _publish_journal_path(target).exists()
 
 
 class TestPullManagedCleanup:
@@ -853,6 +962,19 @@ class TestPullPathSafety:
 
         with _make_client() as client, pytest.raises(SystemExit):
             pull_space(client, "test", root)
+
+    def test_rejects_current_directory_inside_target(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+    ) -> None:
+        target = tmp_path / "test"
+        current = target / "nested"
+        current.mkdir(parents=True)
+        monkeypatch.chdir(current)
+
+        with _make_client() as client, pytest.raises(SystemExit):
+            pull_space(client, "test", target)
 
     def test_rejects_managed_cleanup_through_symlinked_parent(
         self,

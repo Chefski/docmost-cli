@@ -6,7 +6,10 @@ import pytest
 
 from docmost_cli.api.client import DocmostClient
 from docmost_cli.api.pages import (
+    PageImportOverrideError,
+    build_page_tree,
     copy_page,
+    create_page,
     create_page_via_import,
     delete_page,
     duplicate_page,
@@ -17,12 +20,89 @@ from docmost_cli.api.pages import (
     get_page_history,
     get_page_info,
     get_sidebar_pages,
+    import_page,
     import_page_archive,
     list_recent_pages,
     move_page,
     update_page_content,
     update_page_meta,
 )
+
+
+class TestBuildPageTree:
+    def test_follows_more_than_ten_levels(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        api_key_settings,
+    ) -> None:
+        def page(level: int) -> dict[str, object]:
+            return {
+                "id": f"page-{level}",
+                "title": f"Page {level}",
+                "hasChildren": level < 12,
+                "children": [],
+            }
+
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_sidebar_pages",
+            lambda _client, _space_id: {"data": {"items": [page(0)]}},
+        )
+
+        def children(_client, page_id: str, *, space_id: str | None = None):
+            del space_id
+            level = int(page_id.removeprefix("page-"))
+            return {"data": {"items": [page(level + 1)] if level < 12 else []}}
+
+        monkeypatch.setattr("docmost_cli.api.pages.get_page_children", children)
+        with DocmostClient(api_key_settings) as client:
+            tree = build_page_tree(client, "space-1")
+
+        current = tree[0]
+        for level in range(13):
+            assert current["id"] == f"page-{level}"
+            if level < 12:
+                current = current["children"][0]
+
+    def test_depth_limit_raises_instead_of_returning_partial_tree(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        api_key_settings,
+    ) -> None:
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_sidebar_pages",
+            lambda _client, _space_id: {
+                "data": {
+                    "items": [
+                        {
+                            "id": "root",
+                            "title": "Root",
+                            "hasChildren": True,
+                            "children": [],
+                        }
+                    ]
+                }
+            },
+        )
+        monkeypatch.setattr(
+            "docmost_cli.api.pages.get_page_children",
+            lambda _client, _page_id, **_kwargs: {
+                "data": {
+                    "items": [
+                        {
+                            "id": "child",
+                            "title": "Child",
+                            "hasChildren": True,
+                            "children": [],
+                        }
+                    ]
+                }
+            },
+        )
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(RuntimeError, match="exceeds maximum depth"),
+        ):
+            build_page_tree(client, "space-1", max_depth=1)
 
 
 class TestGetPageInfo:
@@ -45,14 +125,14 @@ class TestGetPageInfo:
         assert exc.value.code == 4
 
 
-class TestCreatePageViaImport:
-    def test_sends_multipart(self, httpx_mock, api_key_settings) -> None:
+class TestCreatePage:
+    def test_sends_markdown_content(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
+            url="https://docs.example.com/api/pages/create",
             json={"id": "new-page"},
         )
         with DocmostClient(api_key_settings) as client:
-            result = create_page_via_import(
+            result = create_page(
                 client,
                 space_id="space-1",
                 title="New Page",
@@ -60,17 +140,22 @@ class TestCreatePageViaImport:
             )
         assert result["id"] == "new-page"
 
-        # Verify the request was sent
         request = httpx_mock.get_requests()[0]
         assert request.method == "POST"
+        assert json.loads(request.content) == {
+            "spaceId": "space-1",
+            "title": "New Page",
+            "content": "Hello world",
+            "format": "markdown",
+        }
 
     def test_empty_content(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
+            url="https://docs.example.com/api/pages/create",
             json={"id": "empty-page"},
         )
         with DocmostClient(api_key_settings) as client:
-            result = create_page_via_import(
+            result = create_page(
                 client,
                 space_id="space-1",
                 title="Empty Page",
@@ -78,20 +163,71 @@ class TestCreatePageViaImport:
             )
         assert result["id"] == "empty-page"
 
-    def test_with_parent(self, httpx_mock, api_key_settings) -> None:
+    def test_accepts_nested_response(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/import",
+            url="https://docs.example.com/api/pages/create",
+            json={"data": {"id": "nested-page"}},
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = create_page(
+                client,
+                space_id="space-1",
+                title="Nested Response",
+                content="",
+            )
+        assert result == {"id": "nested-page"}
+
+    def test_missing_response_id_exits(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/create",
+            json={"title": "Missing ID"},
+        )
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit) as exc:
+            create_page(
+                client,
+                space_id="space-1",
+                title="Missing ID",
+                content="",
+            )
+        assert exc.value.code == 1
+
+    def test_with_parent_and_icon(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/create",
             json={"id": "child-page"},
         )
         with DocmostClient(api_key_settings) as client:
-            result = create_page_via_import(
+            result = create_page(
                 client,
                 space_id="space-1",
                 title="Child",
                 content="Content",
                 parent_page_id="parent-1",
+                icon="🚀",
             )
         assert result["id"] == "child-page"
+        assert json.loads(httpx_mock.get_requests()[0].content) == {
+            "spaceId": "space-1",
+            "title": "Child",
+            "content": "Content",
+            "format": "markdown",
+            "parentPageId": "parent-1",
+            "icon": "🚀",
+        }
+
+    def test_historical_helper_uses_create_endpoint(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/create",
+            json={"id": "compat-page"},
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = create_page_via_import(
+                client,
+                space_id="space-1",
+                title="Compatibility",
+                content="Content",
+            )
+        assert result["id"] == "compat-page"
 
 
 class TestUpdatePageMeta:
@@ -151,45 +287,83 @@ class TestMovePage:
         with DocmostClient(api_key_settings) as client:
             result = move_page(client, page_id="page-1", parent_page_id="parent-1")
         assert result["id"] == "page-1"
+        assert json.loads(httpx_mock.get_requests()[0].content) == {
+            "pageId": "page-1",
+            "parentPageId": "parent-1",
+            "position": "aaaaa",
+        }
 
     def test_move_to_space(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move-to-space",
+        )
+        with DocmostClient(api_key_settings) as client:
+            result = move_page(client, page_id="page-1", space_id="space-2")
+        assert result == {}
+        assert json.loads(httpx_mock.get_requests()[0].content) == {
+            "pageId": "page-1",
+            "spaceId": "space-2",
+        }
+
+    def test_move_to_root_sends_null_parent(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/move",
             json={"id": "page-1"},
         )
         with DocmostClient(api_key_settings) as client:
-            result = move_page(client, page_id="page-1", space_id="space-2")
+            result = move_page(client, page_id="page-1", position="bbbbb")
         assert result["id"] == "page-1"
+        assert json.loads(httpx_mock.get_requests()[0].content) == {
+            "pageId": "page-1",
+            "parentPageId": None,
+            "position": "bbbbb",
+        }
+
+    def test_move_to_space_rejects_parent(self, httpx_mock, api_key_settings) -> None:
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit):
+            move_page(
+                client,
+                page_id="page-1",
+                space_id="space-2",
+                parent_page_id="parent-2",
+            )
+        assert httpx_mock.get_requests() == []
 
 
 class TestGetPageContent:
-    def test_enterprise_content_endpoint(self, httpx_mock, api_key_settings) -> None:
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
-            json={"content": {"type": "doc", "content": []}},
-        )
+    def test_returns_content_from_info(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/info",
-            json={"id": "page-1", "title": "Test", "spaceId": "s1"},
+            json={
+                "id": "page-1",
+                "title": "Test",
+                "spaceId": "s1",
+                "content": {"type": "doc", "content": []},
+            },
         )
         with DocmostClient(api_key_settings) as client:
             result = get_page_content(client, "page-1")
         assert result["id"] == "page-1"
         assert "content" in result
+        assert len(httpx_mock.get_requests()) == 1
 
-    def test_fallback_to_info(self, httpx_mock, api_key_settings) -> None:
-        # Content endpoint returns 404 (Community edition)
-        httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/content",
-            status_code=404,
-        )
+    def test_missing_content_exits(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
             url="https://docs.example.com/api/pages/info",
-            json={"id": "page-1", "title": "Test", "content": {"type": "doc", "content": []}},
+            json={"id": "page-1", "title": "Test", "spaceId": "s1"},
+        )
+        with DocmostClient(api_key_settings) as client, pytest.raises(SystemExit) as exc:
+            get_page_content(client, "page-1")
+        assert exc.value.code == 1
+
+    def test_null_content_is_a_valid_empty_page(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/info",
+            json={"id": "page-1", "title": "Empty", "spaceId": "s1", "content": None},
         )
         with DocmostClient(api_key_settings) as client:
             result = get_page_content(client, "page-1")
-        assert result["id"] == "page-1"
+        assert result["content"] is None
 
 
 class TestListRecentPages:
@@ -223,12 +397,16 @@ class TestDuplicatePage:
 class TestCopyPage:
     def test_copy(self, httpx_mock, api_key_settings) -> None:
         httpx_mock.add_response(
-            url="https://docs.example.com/api/pages/copy",
+            url="https://docs.example.com/api/pages/duplicate",
             json={"id": "copy-page"},
         )
         with DocmostClient(api_key_settings) as client:
             result = copy_page(client, "page-1", "space-2")
         assert result["id"] == "copy-page"
+        assert json.loads(httpx_mock.get_requests()[0].content) == {
+            "pageId": "page-1",
+            "spaceId": "space-2",
+        }
 
 
 class TestGetPageChildren:
@@ -323,6 +501,76 @@ class TestImportPageArchive:
         assert b'name="source"' in body
         assert b"generic" in body
         assert b"portable.zip" in body
+
+
+class TestImportPage:
+    def test_parent_compatibility_moves_after_import(self, httpx_mock, api_key_settings) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            json={"id": "imported-page"},
+        )
+
+        with DocmostClient(api_key_settings) as client:
+            result = import_page(
+                client,
+                space_id="space-1",
+                file_name="page.md",
+                file_bytes=b"# Page",
+                parent_page_id="parent-1",
+            )
+
+        assert result["id"] == "imported-page"
+        requests = httpx_mock.get_requests()
+        assert [request.url.path for request in requests] == [
+            "/api/pages/import",
+            "/api/pages/move",
+        ]
+        assert b"parentPageId" not in requests[0].read()
+        assert json.loads(requests[1].content) == {
+            "pageId": "imported-page",
+            "parentPageId": "parent-1",
+            "position": "aaaaa",
+        }
+
+    def test_failed_parent_move_preserves_import_result(
+        self,
+        httpx_mock,
+        api_key_settings,
+        capsys,
+    ) -> None:
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/import",
+            json={"id": "imported-page", "title": "Page"},
+        )
+        httpx_mock.add_response(
+            url="https://docs.example.com/api/pages/move",
+            status_code=404,
+        )
+
+        with (
+            DocmostClient(api_key_settings) as client,
+            pytest.raises(PageImportOverrideError) as exc,
+        ):
+            import_page(
+                client,
+                space_id="space-1",
+                file_name="page.md",
+                file_bytes=b"# Page",
+                parent_page_id="missing-parent",
+            )
+
+        assert exc.value.code == 4
+        assert exc.value.page_id == "imported-page"
+        assert exc.value.result == {"id": "imported-page", "title": "Page"}
+        assert len(exc.value.failures) == 1
+        assert exc.value.failures[0].code == 4
+        captured = capsys.readouterr()
+        assert captured.out == "imported-page\n"
+        assert "failed to apply the requested override" in captured.err
 
 
 class TestGetSidebarPages:
