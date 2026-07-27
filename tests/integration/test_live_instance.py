@@ -134,7 +134,7 @@ def test_enterprise_attachment_search(integration_client: DocmostClient) -> None
         pytest.skip("DOCMOST_INTEGRATION_EDITION is not enterprise")
     if not enabled("DOCMOST_INTEGRATION_ATTACHMENT_SEARCH"):
         pytest.skip("DOCMOST_INTEGRATION_ATTACHMENT_SEARCH is not enabled")
-    _skip_known_drift(("endpoint", "/attachments/search"))
+    _skip_known_drift(("endpoint", "/search-attachments"))
 
     results = extract_items(search_attachments(integration_client, "contract"))
     assert isinstance(results, list)

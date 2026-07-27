@@ -164,14 +164,15 @@ def _literal_client_requests(source: str, source_name: str) -> set[tuple[str, st
 
 def _source_requests() -> set[tuple[str, str, str]]:
     requests: set[tuple[str, str, str]] = set()
-    api_root = ROOT / "src" / "docmost_cli" / "api"
-    for source_path in sorted(api_root.glob("*.py")):
-        requests.update(
-            _literal_client_requests(
-                source_path.read_text(),
-                str(source_path.relative_to(ROOT)),
+    source_root = ROOT / "src" / "docmost_cli"
+    for package_name in ("api", "sync"):
+        for source_path in sorted((source_root / package_name).rglob("*.py")):
+            requests.update(
+                _literal_client_requests(
+                    source_path.read_text(),
+                    str(source_path.relative_to(ROOT)),
+                )
             )
-        )
     return requests
 
 
@@ -238,9 +239,22 @@ def test_literal_endpoint_inventory_handles_keyword_paths() -> None:
     ) == {("example.py", "POST", "/new-endpoint")}
 
 
+def test_literal_endpoint_inventory_includes_sync_sources() -> None:
+    source_requests = _source_requests()
+    assert (
+        "src/docmost_cli/sync/conflicts.py",
+        "POST",
+        "/pages/content",
+    ) in source_requests
+    assert (
+        "src/docmost_cli/sync/rich_content.py",
+        "POST",
+        "/pages/info",
+    ) in source_requests
+
+
 def test_known_drift_excludes_retired_entries_and_remains_actionable() -> None:
     retired = {
-        ("endpoint", "POST", "/pages/content", ()),
         ("endpoint", "POST", "/pages/copy", ()),
         ("request-fields", "POST", "/pages/import", ("parentPageId",)),
         ("request-fields", "POST", "/pages/move", ("spaceId",)),
@@ -255,6 +269,12 @@ def test_known_drift_excludes_retired_entries_and_remains_actionable() -> None:
         for entry in CONTRACT["known_drift"]
     }
     assert actual.isdisjoint(retired)
+    assert (
+        "endpoint",
+        "POST",
+        "/pages/content",
+        (),
+    ) in actual
     for entry in CONTRACT["known_drift"]:
         assert entry["owner"].startswith("high-priority fix ")
         assert entry["replacement"]

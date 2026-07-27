@@ -755,5 +755,20 @@
       ]
     }
   },
-  "known_drift": []
+  "known_drift": [
+    {
+      "kind": "endpoint",
+      "method": "POST",
+      "path": "/pages/content",
+      "source": "src/docmost_cli/sync/conflicts.py",
+      "replacement": "/pages/info on current Docmost versions",
+      "owner": "high-priority fix 8 follow-up",
+      "upstream_absence": [
+        {
+          "kind": "controller",
+          "file": "apps/server/src/core/page/page.controller.ts"
+        }
+      ]
+    }
+  ]
 }
